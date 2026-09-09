@@ -1,0 +1,9 @@
+[submodule "DaisySeed/DaisyBootloader"]
+	path = DaisySeed/DaisyBootloader
+	url = https://github.com/electro-smith/DaisyBootloader.git
+[submodule "DaisySeed/libDaisy"]
+	path = DaisySeed/libDaisy
+	url = https://github.com/electro-smith/libDaisy.git
+[submodule "DaisySeed/DaisyExamples"]
+	path = DaisySeed/DaisyExamples
+	url = https://github.com/electro-smith/DaisyExamples.git
