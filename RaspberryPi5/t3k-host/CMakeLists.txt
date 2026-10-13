@@ -72,6 +72,8 @@ target_sources(t3k-host PRIVATE
     src/main.cpp
     src/display/DisplayUi.cpp
     src/display/SpiLcd.cpp
+    src/input/EncoderReader.cpp
+    src/input/EncoderUi.cpp
     ${T3K_PLUGIN}/src/AutoOffset.cpp
     ${T3K_PLUGIN}/src/BlockEq.cpp
     ${T3K_PLUGIN}/src/BlockSpectrum.cpp
@@ -130,3 +132,7 @@ add_dependencies(t3k-host NAM)
 # Display wiring/panel check; plain C++, no JUCE.
 add_executable(lcd-test tools/lcd-test.cpp src/display/SpiLcd.cpp)
 target_include_directories(lcd-test PRIVATE src)
+
+# Encoder wiring check; plain C++, no JUCE.
+add_executable(enc-test tools/enc-test.cpp src/input/EncoderReader.cpp)
+target_include_directories(enc-test PRIVATE src)

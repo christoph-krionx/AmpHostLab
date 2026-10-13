@@ -38,6 +38,8 @@ t3k-host --device Scarlett --block 64 --tone ~/tones/my-amp.nam
 | `--lcd <panel>` | SPI display: `none` (default), `ili9341`, `st7789` |
 | `--lcd-rotation <0..3>` | Quarter turns, default 1 (landscape) |
 | `--lcd-speed <hz>` | SPI clock, default 16000000 |
+| `--encoder <a,b,sw>` | Front-panel encoder on these BCM GPIOs, e.g. `5,6,26` |
+| `--tones-dir <path>` | Folder of `.nam` files the model item steps through (default: folder of `--tone`, else `~/tones`) |
 
 ## Display
 
@@ -57,6 +59,23 @@ A 240x320 SPI panel (ILI9341/ILI9340 or ST7789) driven from userspace through `s
 `build/lcd-test --panel ili9341` draws a test picture (frame, corner marker, colour bars) to check wiring and orientation without starting audio.
 
 The screen text needs a font that fontconfig can find, for example DejaVu Sans in `~/.local/share/fonts`.
+
+## Encoder
+
+One rotary encoder with push button operates the device. On the top level, turning moves the cursor over model, gain, bass, mid, treble, volume, gate, pitch and spread (wrapping around); a press enters the selected item, turning then changes its value, and another press leaves.
+
+The encoder is read through GPIO edge events with the Pi's internal pull-ups, so it only needs wires to the pins and GND:
+
+| Encoder | CM5 header |
+| --- | --- |
+| A (CLK) | GPIO 5 (pin 29) |
+| B (DT) | GPIO 6 (pin 31) |
+| Button (SW) | GPIO 26 (pin 37) |
+| Common / GND | GND (pin 39) |
+
+Encoder modules with on-board pull-up resistors need those removed (or their `+` pin on 3.3 V); with `+` left open the resistors couple the three signals together.
+
+`build/enc-test` prints every detent and button event to check the wiring.
 
 ## Realtime permissions
 

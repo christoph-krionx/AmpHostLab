@@ -1,5 +1,7 @@
 #include "SpiLcd.h"
 
+#include "HeaderGpio.h"
+
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -19,22 +21,6 @@ constexpr size_t kSpiChunk = 4096;
 
 void sleepMs(int ms) {
   std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-}
-
-// The 40-pin header GPIOs sit on the RP1; its chip number differs between
-// kernels, so find it by label.
-int openHeaderGpioChip() {
-  for (int i = 0; i < 16; ++i) {
-    const auto path = "/dev/gpiochip" + std::to_string(i);
-    const int fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
-    if (fd < 0)
-      continue;
-    gpiochip_info info{};
-    if (ioctl(fd, GPIO_GET_CHIPINFO_IOCTL, &info) == 0 && std::strcmp(info.label, "pinctrl-rp1") == 0)
-      return fd;
-    ::close(fd);
-  }
-  return -1;
 }
 
 int requestOutput(int chipFd, int pin, bool initial) {
@@ -110,7 +96,9 @@ bool SpiLcd::open(const LcdConfig& config) {
   w = landscape ? 320 : 240;
   h = landscape ? 240 : 320;
 
-  if (!initPanel(config))
+  panel = config.panel;
+  rotation = config.rotation & 3;
+  if (!initPanel())
     return fail("initialise panel");
   return true;
 }
@@ -146,20 +134,32 @@ bool SpiLcd::command(uint8_t cmd, std::initializer_list<uint8_t> data) {
   return data.size() == 0 || writeBytes(data.begin(), data.size());
 }
 
-bool SpiLcd::initPanel(const LcdConfig& config) {
+bool SpiLcd::initPanel() {
   if (resetFd >= 0) {
     setLine(resetFd, false);
     sleepMs(20);
     setLine(resetFd, true);
     sleepMs(150);
   }
-  bool ok = command(0x01);  // software reset
+  if (!command(0x01))  // software reset
+    return false;
   sleepMs(150);
-  ok = ok && command(0x11);  // sleep out
+  if (!command(0x11))  // sleep out
+    return false;
   sleepMs(120);
+  const bool ok = configurePanel();
+  sleepMs(20);
+  return ok;
+}
 
-  const int rot = config.rotation & 3;
-  if (config.panel == LcdPanel::Ili9341) {
+bool SpiLcd::reconfigure() {
+  return spiFd >= 0 && command(0x11) && configurePanel();
+}
+
+bool SpiLcd::configurePanel() {
+  const int rot = rotation;
+  bool ok = true;
+  if (panel == LcdPanel::Ili9341) {
     ok = ok && command(0xC0, {0x23})                    // power control 1
          && command(0xC1, {0x10})                       // power control 2
          && command(0xC5, {0x3E, 0x28})                 // VCOM 1
@@ -175,11 +175,10 @@ bool SpiLcd::initPanel(const LcdConfig& config) {
     ok = ok && command(0x36, {kMadctlSt7789[rot]})
          && command(0x21);                              // inversion on (IPS)
   }
-  ok = ok && command(0x3A, {0x55})                      // 16 bit per pixel
-       && command(0x13)                                 // normal display mode
-       && command(0x29);                                // display on
-  sleepMs(20);
-  return ok;
+  return ok && command(0x3A, {0x55})                    // 16 bit per pixel
+         && command(0x37, {0x00, 0x00})                 // no vertical scroll
+         && command(0x13)                               // normal display mode
+         && command(0x29);                              // display on
 }
 
 bool SpiLcd::setWindow(int x, int y, int blockW, int blockH) {
@@ -190,14 +189,18 @@ bool SpiLcd::setWindow(int x, int y, int blockW, int blockH) {
          && command(0x2C);
 }
 
-bool SpiLcd::blit(int x, int y, int blockW, int blockH, const uint16_t* pixels) {
+bool SpiLcd::blit(int x, int y, int blockW, int blockH, const uint16_t* pixels, int stride) {
   if (spiFd < 0 || blockW <= 0 || blockH <= 0 || x < 0 || y < 0 || x + blockW > w || y + blockH > h)
     return false;
-  const size_t count = static_cast<size_t>(blockW) * static_cast<size_t>(blockH);
-  txBuffer.resize(count * 2);
-  for (size_t i = 0; i < count; ++i) {  // the panel wants big-endian RGB565
-    txBuffer[2 * i] = static_cast<uint8_t>(pixels[i] >> 8);
-    txBuffer[2 * i + 1] = static_cast<uint8_t>(pixels[i]);
+  const size_t rowStep = static_cast<size_t>(stride > 0 ? stride : blockW);
+  txBuffer.resize(static_cast<size_t>(blockW) * static_cast<size_t>(blockH) * 2);
+  auto* out = txBuffer.data();
+  for (int row = 0; row < blockH; ++row) {
+    const uint16_t* in = pixels + static_cast<size_t>(row) * rowStep;
+    for (int col = 0; col < blockW; ++col) {  // the panel wants big-endian RGB565
+      *out++ = static_cast<uint8_t>(in[col] >> 8);
+      *out++ = static_cast<uint8_t>(in[col]);
+    }
   }
   return setWindow(x, y, blockW, blockH) && writeBytes(txBuffer.data(), txBuffer.size());
 }

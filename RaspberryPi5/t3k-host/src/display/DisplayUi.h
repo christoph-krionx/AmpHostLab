@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "SpiLcd.h"
+#include "UiState.h"
 
 class TONE3000Processor;
 
@@ -17,7 +18,7 @@ namespace t3k {
 
 class DisplayUi : private juce::Thread {
 public:
-  DisplayUi(TONE3000Processor& processor, juce::AudioDeviceManager& deviceManager);
+  DisplayUi(TONE3000Processor& processor, juce::AudioDeviceManager& deviceManager, const UiState& state);
   ~DisplayUi() override;
 
   /** Opens the display and shows the splash screen. Returns an error
@@ -38,10 +39,12 @@ private:
 
   TONE3000Processor& processor;
   juce::AudioDeviceManager& deviceManager;
+  const UiState& state;
   SpiLcd lcd;
   std::vector<uint16_t> shown;    // what the panel currently displays
   std::vector<uint16_t> pending;  // the frame being sent
   bool firstFrame{true};
+  juce::uint32 clipUntilMs[2]{0, 0};  // input, output: clip light stays on until then
   std::atomic<bool> mainRequested{false};
   juce::CriticalSection titleLock;
   juce::String title;

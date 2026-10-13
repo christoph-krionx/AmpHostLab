@@ -44,9 +44,16 @@ public:
 
   void setBacklight(bool on);
 
-  /** Sends a w*h block of RGB565 pixels (host byte order) to x,y. */
-  bool blit(int x, int y, int blockW, int blockH, const uint16_t* pixels);
+  /** Sends a w*h block of RGB565 pixels (host byte order) to x,y.
+      `stride` is the distance between rows in pixels, for a block that
+      sits inside a larger picture; 0 = rows follow each other directly. */
+  bool blit(int x, int y, int blockW, int blockH, const uint16_t* pixels, int stride = 0);
   bool fill(uint16_t color);
+
+  /** Sends the panel's settings again, without a reset. A glitch on the
+      SPI wires can turn pixel data into a command and leave the panel in
+      a wrong mode; this puts it back. Follow it with a full redraw. */
+  bool reconfigure();
 
   static constexpr uint16_t rgb(uint8_t r, uint8_t g, uint8_t b) {
     return static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
@@ -56,7 +63,8 @@ private:
   bool command(uint8_t cmd, std::initializer_list<uint8_t> data = {});
   bool writeBytes(const uint8_t* data, size_t size);
   bool setWindow(int x, int y, int blockW, int blockH);
-  bool initPanel(const LcdConfig& config);
+  bool initPanel();
+  bool configurePanel();
   bool fail(const std::string& what);
 
   int spiFd{-1};
@@ -65,6 +73,8 @@ private:
   int backlightFd{-1};
   int w{0};
   int h{0};
+  LcdPanel panel{LcdPanel::St7789};
+  int rotation{1};
   std::vector<uint8_t> txBuffer;
   std::string lastError;
 };

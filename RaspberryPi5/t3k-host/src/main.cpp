@@ -14,6 +14,7 @@
 
 #include "Processor.h"
 #include "display/DisplayUi.h"
+#include "input/EncoderUi.h"
 
 namespace {
 
@@ -34,6 +35,8 @@ struct Options {
   juce::String lcd{"none"};  // none | ili9341 | st7789
   int lcdRotation{1};
   int lcdSpeed{16000000};
+  juce::String encoder;   // "a,b,sw" BCM GPIO numbers, empty = no encoder
+  juce::String tonesDir;  // folder the model item steps through
   juce::StringArray sets;  // "paramId=value", in the parameter's own units
   bool listDevices{false};
   bool listParams{false};
@@ -51,6 +54,8 @@ void printUsage() {
                "  --status <seconds>    CPU/xrun report interval, 0 = off (default 5)\n"
                "  --set <id>=<value>    set a parameter, repeatable (e.g. pitchSemitones=-2)\n"
                "  --list-params         list parameter ids with range and value, then exit\n"
+               "  --encoder <a,b,sw>    front-panel encoder on these GPIOs (e.g. 5,6,26)\n"
+               "  --tones-dir <path>    folder of .nam files to step through (default: folder of --tone, else ~/tones)\n"
                "  --lcd <panel>        SPI display: none | ili9341 | st7789 (default none)\n"
                "  --lcd-rotation <0..3> quarter turns (default 1, landscape)\n"
                "  --lcd-speed <hz>      SPI clock (default 16000000)\n";
@@ -70,6 +75,8 @@ bool parseArgs(const juce::StringArray& args, Options& o) {
     else if (a == "--status") o.statusSeconds = value().getIntValue();
     else if (a == "--set") o.sets.add(value());
     else if (a == "--list-params") o.listParams = true;
+    else if (a == "--encoder") o.encoder = value();
+    else if (a == "--tones-dir") o.tonesDir = value();
     else if (a == "--lcd") o.lcd = value();
     else if (a == "--lcd-rotation") o.lcdRotation = value().getIntValue();
     else if (a == "--lcd-speed") o.lcdSpeed = value().getIntValue();
@@ -169,13 +176,14 @@ int main(int argc, char** argv) {
   }
 
   // The display comes up first so the splash covers device and tone setup.
+  t3k::UiState uiState;
   std::unique_ptr<t3k::DisplayUi> display;
   if (opt.lcd != "none") {
     t3k::LcdConfig lcd;
     lcd.panel = opt.lcd == "st7789" ? t3k::LcdPanel::St7789 : t3k::LcdPanel::Ili9341;
     lcd.rotation = opt.lcdRotation;
     lcd.spiHz = static_cast<uint32_t>(opt.lcdSpeed);
-    display = std::make_unique<t3k::DisplayUi>(processor, deviceManager);
+    display = std::make_unique<t3k::DisplayUi>(processor, deviceManager, uiState);
     const auto lcdError = display->start(lcd);
     if (lcdError.isNotEmpty()) {
       std::cerr << "Display not available: " << lcdError << std::endl;
@@ -222,9 +230,15 @@ int main(int argc, char** argv) {
               << "Reported round trip: " << juce::String(1000.0 * latency / rate, 2) << " ms" << std::endl;
   }
 
+  juce::File toneFile;
+  std::string toneBlockId;
   if (opt.tone.isNotEmpty()) {
     const auto file = juce::File::getCurrentWorkingDirectory().getChildFile(opt.tone);
     const auto result = processor.loadLocalTonePath(file);
+    if (!result.hasProperty("error")) {
+      toneFile = file;
+      toneBlockId = result["blockId"].toString().toStdString();
+    }
     if (result.hasProperty("error"))
       std::cerr << "Tone not loaded: " << result["error"].toString() << std::endl;
     else
@@ -248,6 +262,23 @@ int main(int argc, char** argv) {
       display->setTitle(opt.preset);
   }
 
+  std::unique_ptr<t3k::EncoderUi> encoder;
+  if (opt.encoder.isNotEmpty()) {
+    const auto pins = juce::StringArray::fromTokens(opt.encoder, ",", "");
+    const auto home = juce::File::getSpecialLocation(juce::File::userHomeDirectory);
+    encoder = std::make_unique<t3k::EncoderUi>(processor, uiState, display.get());
+    encoder->setTonesDir(opt.tonesDir.isNotEmpty() ? juce::File::getCurrentWorkingDirectory().getChildFile(opt.tonesDir)
+                         : toneFile.existsAsFile() ? toneFile.getParentDirectory() : home.getChildFile("tones"));
+    encoder->setCurrentTone(toneFile, toneBlockId);
+    const auto encoderError =
+        pins.size() == 3 ? encoder->start({pins[0].getIntValue(), pins[1].getIntValue(), pins[2].getIntValue()})
+                         : juce::String("expected --encoder a,b,sw");
+    if (encoderError.isNotEmpty()) {
+      std::cerr << "Encoder not available: " << encoderError << std::endl;
+      encoder.reset();
+    }
+  }
+
   if (display != nullptr)
     display->showMain();
 
@@ -259,6 +290,7 @@ int main(int argc, char** argv) {
     juce::MessageManager::getInstance()->runDispatchLoop();
   }
 
+  encoder.reset();
   display.reset();
   deviceManager.removeAudioCallback(&player);
   deviceManager.closeAudioDevice();
