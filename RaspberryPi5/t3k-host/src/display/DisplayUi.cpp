@@ -1,6 +1,7 @@
 #include "DisplayUi.h"
 
 #include "Processor.h"
+#include "core/GearGlyphs.h"
 
 namespace t3k {
 
@@ -13,6 +14,8 @@ constexpr int kMinSplashMs = 1500;
 constexpr int kRefreshMs = 2000;
 // The picture is compared and sent in tiles of this size.
 constexpr int kTile = 16;
+// Size the gear pictograms are rendered at; drawn smaller.
+constexpr int kGlyphSize = 48;
 // Level that counts as clipping, and how long the clip light stays on.
 constexpr float kClipDb = -0.5f;
 // Above this level the meter bar turns orange.
@@ -45,6 +48,16 @@ juce::Font font(float height, bool bold = false) {
   return juce::Font(juce::FontOptions(height, bold ? juce::Font::bold : juce::Font::plain));
 }
 
+// The plugin's pictogram for a gear id, drawn white on transparent.
+juce::Image renderGlyph(const char* svg, int size) {
+  juce::Image image(juce::Image::ARGB, size, size, true, juce::SoftwareImageType());
+  if (const auto drawable = juce::Drawable::createFromSVGString(svg)) {
+    juce::Graphics g(image);
+    drawable->drawWithin(g, image.getBounds().toFloat(), juce::RectanglePlacement::centred, 1.0f);
+  }
+  return image;
+}
+
 float meterDb(const juce::var& levels, const char* key) {
   const auto pair = levels[key];
   return juce::jmax(static_cast<float>(pair[0]), static_cast<float>(pair[1]));
@@ -53,7 +66,16 @@ float meterDb(const juce::var& levels, const char* key) {
 }  // namespace
 
 DisplayUi::DisplayUi(TONE3000Processor& p, juce::AudioDeviceManager& dm, const UiState& s)
-    : juce::Thread("display"), processor(p), deviceManager(dm), state(s) {}
+    : juce::Thread("display"), processor(p), deviceManager(dm), state(s) {
+  for (const char* gear : {"amp", "amp-cab", "pedal", "outboard", "cab", "space", "experimental", "ir"})
+    glyphs[gear] = renderGlyph(ui::gear::svgFor(gear), kGlyphSize);
+  glyphs["file"] = renderGlyph(ui::gear::kFileIcon, kGlyphSize);
+}
+
+const juce::Image& DisplayUi::glyphFor(const juce::String& gear) const {
+  const auto found = glyphs.find(gear == "full-rig" ? juce::String("amp-cab") : gear);
+  return found != glyphs.end() ? found->second : glyphs.at("amp");
+}
 
 DisplayUi::~DisplayUi() {
   stopThread(1000);
@@ -120,10 +142,11 @@ void DisplayUi::drawMain(juce::Graphics& g) {
 
   // Cursor: white frame on the selected item, blue once it is being edited.
   const bool cursorOn = state.active.load();
-  const int selected = state.selected.load();
+  const auto chain = state.getChain();
+  const auto target = cursorTarget(state.selected.load(), static_cast<int>(chain.tones().size()));
   const bool editing = state.editing.load();
   const auto cursor = [&](UiItem item, juce::Rectangle<float> box) {
-    if (!cursorOn || selected != static_cast<int>(item))
+    if (!cursorOn || target.isBlock || target.item != item)
       return;
     if (editing) {
       g.setColour(kEditFill);
@@ -133,7 +156,22 @@ void DisplayUi::drawMain(juce::Graphics& g) {
     g.drawRoundedRectangle(box.reduced(1.0f), 6.0f, 2.0f);
   };
 
-  // Top line: title left, audio load right (red once the device dropped out).
+  // Layout, top to bottom, like the plugin: preset name, the chain grid with
+  // a level meter on each side, the selected block's name, the knobs, the
+  // effect switches. The same gap separates every band.
+  const int gap = 5;
+  const int titleTop = 2;
+  const int titleH = 30;
+  const int gridTop = titleTop + titleH + gap;
+  const int gridH = 72;
+  const int nameTop = gridTop + gridH + gap;
+  const int nameH = 13;
+  const int knobTop = nameTop + nameH + gap;
+  const int knobH = 76;
+  const int switchTop = knobTop + knobH + gap;
+  const int switchH = 24;
+
+  // Preset name left, audio load right (red once the device dropped out).
   juce::String name;
   {
     const juce::ScopedLock lock(titleLock);
@@ -142,21 +180,97 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   int xruns = 0;
   if (auto* dev = deviceManager.getCurrentAudioDevice())
     xruns = dev->getXRunCount();
-  cursor(UiItem::Model, juce::Rectangle<int>(2, 2, w - 76, 34).toFloat());
+  cursor(UiItem::Preset, juce::Rectangle<int>(2, titleTop, w - 76, titleH).toFloat());
   g.setColour(kText);
   g.setFont(font(20.0f, true));
-  g.drawText(name, 8, 6, w - 86, 26, juce::Justification::centredLeft, true);
+  g.drawText(name, 8, titleTop, w - 86, titleH, juce::Justification::centredLeft, true);
   g.setColour(xruns > 0 ? kWarn : kDim);
   g.setFont(font(14.0f));
   g.drawText(juce::String(juce::roundToInt(static_cast<double>(levels["cpu"]) * 100.0)) + " %",
-             w - 70, 6, 62, 26, juce::Justification::centredRight);
-  g.setColour(kTrack);
-  g.fillRect(0, 38, w, 1);
+             w - 70, titleTop, 62, titleH, juce::Justification::centredRight);
 
-  // Five knobs, one per encoder.
+  // Input level far left, output level far right, -60..0 dB, filling
+  // upwards, each with a clip light on top that stays on for a moment.
+  // They run the height of the grid and the name line together.
+  const int meterW = 10;
+  const int meterMargin = 6;
+  const int clipSize = 8;
+  const int labelH = 13;
+  const int meterBottom = nameTop + nameH;
+  const char* const meterKeys[] = {"input", "output"};
+  const char* const meterNames[] = {"I", "O"};
+  const auto nowMs = juce::Time::getMillisecondCounter();
+  for (int i = 0; i < 2; ++i) {
+    const int x = i == 0 ? meterMargin : w - meterMargin - meterW;
+    const int barTop = gridTop + clipSize + 8;
+    const juce::Rectangle<int> bar(x, barTop, meterW, meterBottom - labelH - barTop);
+    const float db = meterDb(levels, meterKeys[i]);
+    const float pos = juce::jlimit(0.0f, 1.0f, (db + 60.0f) / 60.0f);
+    g.setColour(kTrack);
+    g.fillRect(bar);
+    g.setColour(db > kHotDb ? kAccent : kMeter);
+    g.fillRect(bar.withTop(bar.getBottom() - juce::roundToInt(static_cast<float>(bar.getHeight()) * pos)));
+
+    if (db >= kClipDb)
+      clipUntilMs[i] = nowMs + kClipHoldMs;
+    if (static_cast<juce::int32>(clipUntilMs[i] - nowMs) > 0) {
+      g.setColour(kWarn);
+      g.fillEllipse(static_cast<float>(x + (meterW - clipSize) / 2), static_cast<float>(gridTop),
+                    static_cast<float>(clipSize), static_cast<float>(clipSize));
+    }
+
+    g.setColour(kDim);
+    g.setFont(font(12.0f, true));
+    g.drawText(meterNames[i], x - 4, meterBottom - labelH, meterW + 8, labelH, juce::Justification::centred);
+  }
+
+  // The chain as a grid between the meters: one row in mono, two in stereo,
+  // at least five slots wide, each block shown by its gear pictogram.
+  // Blocks that are on are filled, blocks that are off only outlined,
+  // empty slots faint.
+  const int gridLeft = meterMargin + meterW + 12;
+  const int gridRows = chain.stereo ? 2 : 1;
+  const int rowH = juce::jmin(44, (gridH - (gridRows - 1) * gap) / gridRows);
+  const int rowsTop = gridTop + (gridH - gridRows * rowH - (gridRows - 1) * gap) / 2;
+  int slots = 5;
+  for (int row = 0; row < gridRows; ++row)
+    slots = juce::jmax(slots, chain.offset[row] + static_cast<int>(chain.rows[row].size()));
+  const int slotW = (w - 2 * gridLeft - (slots - 1) * gap) / slots;
+  int toneIndex = 0;
+  juce::String selectedBlockName;
+  for (int row = 0; row < gridRows; ++row) {
+    const auto& cells = chain.rows[row];
+    for (int i = 0; i < static_cast<int>(cells.size()); ++i) {
+      const auto& cell = cells[static_cast<size_t>(i)];
+      const auto box =
+          juce::Rectangle<int>(gridLeft + (chain.offset[row] + i) * (slotW + gap), rowsTop + row * (rowH + gap), slotW, rowH)
+              .toFloat();
+      if (cell.insert) {
+        g.setColour(kTrack.withAlpha(0.6f));
+        g.drawRoundedRectangle(box.reduced(0.5f), 4.0f, 1.0f);
+        continue;
+      }
+      const bool isSelected = cursorOn && target.isBlock && target.block == toneIndex;
+      ++toneIndex;
+      g.setColour(kTrack);
+      if (cell.enabled)
+        g.fillRoundedRectangle(box, 4.0f);
+      else
+        g.drawRoundedRectangle(box.reduced(0.5f), 4.0f, 1.0f);
+      if (isSelected) {
+        selectedBlockName = cell.name;
+        g.setColour(kText);
+        g.drawRoundedRectangle(box.reduced(1.0f), 4.0f, 2.0f);
+      }
+      g.setColour(!cell.enabled || cell.loading ? kDim : kAccent);
+      g.drawImage(glyphFor(cell.gear), box.reduced(4.0f), juce::RectanglePlacement::centred, true);
+    }
+  }
+
+  // Five knobs.
   const float cellW = static_cast<float>(w) / static_cast<float>(std::size(kKnobs));
   const float radius = juce::jmin(24.0f, cellW * 0.38f);
-  const float cy = 46.0f + radius + 10.0f;
+  const float cy = static_cast<float>(knobTop) + 7.0f + radius;
   const float sweep = juce::MathConstants<float>::pi * 0.75f;
   for (size_t i = 0; i < std::size(kKnobs); ++i) {
     const auto& k = kKnobs[i];
@@ -164,7 +278,8 @@ void DisplayUi::drawMain(juce::Graphics& g) {
     const auto* raw = processor.getParameters().getRawParameterValue(k.paramId);
     const float value = raw != nullptr ? raw->load() * k.scale : 0.0f;
     const float pos = juce::jlimit(0.0f, 1.0f, value / 10.0f);
-    cursor(k.item, juce::Rectangle<float>(cx - cellW * 0.5f + 1.0f, 42.0f, cellW - 2.0f, radius * 2.0f + 38.0f));
+    cursor(k.item, juce::Rectangle<float>(cx - cellW * 0.5f + 1.0f, static_cast<float>(knobTop), cellW - 2.0f,
+                                          static_cast<float>(knobH)));
 
     juce::Path track;
     track.addCentredArc(cx, cy, radius, radius, 0.0f, -sweep, sweep, true);
@@ -184,7 +299,7 @@ void DisplayUi::drawMain(juce::Graphics& g) {
     g.drawText(k.label, cell.translated(0.0f, radius * 2.0f + 2.0f).withHeight(16.0f), juce::Justification::centred);
   }
 
-  // Effect switches: lit when on.
+  // Effect switches along the bottom: lit when on.
   const auto param = [this](const char* id) {
     const auto* raw = processor.getParameters().getRawParameterValue(id);
     return raw != nullptr ? raw->load() : 0.0f;
@@ -204,20 +319,41 @@ void DisplayUi::drawMain(juce::Graphics& g) {
       {UiItem::Pitch, pitchOn ? "PITCH " + pitchText : juce::String("PITCH OFF"), pitchOn},
       {UiItem::Spread, "SPREAD", param("spreadEnabled") > 0.5f},
   };
-  // Below the knobs: a narrow level meter at each edge, the effect switches
-  // between them.
-  const int lowerTop = 136;
-  const int meterW = 10;
-  const int meterMargin = 6;
-  const int labelH = 16;
 
-  const int badgeGap = 8;
-  const int badgeLeft = meterMargin + meterW + 12;
-  const int badgeW = (w - 2 * badgeLeft - 2 * badgeGap) / 3;
+  // Context line under the grid: what the cursor is on, in plain words.
+  juce::String context = selectedBlockName;
+  if (cursorOn && !target.isBlock) {
+    const auto item = target.item;
+    if (item == UiItem::Preset) {
+      const int index = state.presetIndex.load();
+      const int count = state.presetCount.load();
+      context = index >= 0 ? "Preset " + juce::String(index + 1) + " of " + juce::String(count)
+                           : juce::String(count) + " presets";
+    } else if (item == UiItem::Gate) {
+      context = gateOn ? "Gate threshold " + juce::String(juce::roundToInt(param("gateThreshold"))) + " dB"
+                       : juce::String("Gate off");
+    } else if (item == UiItem::Pitch) {
+      context = pitchOn ? "Pitch " + pitchText + " semitones" : juce::String("Pitch off");
+    } else if (item == UiItem::Spread) {
+      context = badges[2].on ? "Spread on" : "Spread off";
+    } else {
+      for (const auto& k : kKnobs)
+        if (k.item == item) {
+          const juce::String label(k.label);
+          context = label.substring(0, 1) + label.substring(1).toLowerCase() + " " + juce::String(param(k.paramId) * k.scale, 1);
+        }
+    }
+  }
+  g.setColour(kText);
+  g.setFont(font(12.0f));
+  g.drawText(context, gridLeft, nameTop, w - 2 * gridLeft, nameH, juce::Justification::centred, true);
+
+  const int badgeGap = 2 * gap;
+  const int badgeW = (w - 16 - 2 * badgeGap) / 3;
   g.setFont(font(13.0f, true));
   for (int i = 0; i < 3; ++i) {
-    const auto box = juce::Rectangle<int>(badgeLeft + i * (badgeW + badgeGap), lowerTop + 14, badgeW, 30).toFloat();
-    cursor(badges[i].item, box.expanded(4.0f));
+    const auto box = juce::Rectangle<int>(8 + i * (badgeW + badgeGap), switchTop, badgeW, switchH).toFloat();
+    cursor(badges[i].item, box.expanded(2.0f));
     if (badges[i].on) {
       g.setColour(kAccent);
       g.fillRoundedRectangle(box, 5.0f);
@@ -228,36 +364,6 @@ void DisplayUi::drawMain(juce::Graphics& g) {
       g.setColour(kDim);
     }
     g.drawText(badges[i].text, box, juce::Justification::centred);
-  }
-
-  // Input level far left, output level far right, -60..0 dB, filling
-  // upwards, each with a clip light on top that stays on for a moment.
-  const char* const meterKeys[] = {"input", "output"};
-  const char* const meterNames[] = {"I", "O"};
-  const int clipSize = 8;
-  const auto nowMs = juce::Time::getMillisecondCounter();
-  for (int i = 0; i < 2; ++i) {
-    const int x = i == 0 ? meterMargin : w - meterMargin - meterW;
-    const int barTop = lowerTop + clipSize + 4;
-    const juce::Rectangle<int> bar(x, barTop, meterW, h - barTop - labelH - 6);
-    const float db = meterDb(levels, meterKeys[i]);
-    const float pos = juce::jlimit(0.0f, 1.0f, (db + 60.0f) / 60.0f);
-    g.setColour(kTrack);
-    g.fillRect(bar);
-    g.setColour(db > kHotDb ? kAccent : kMeter);
-    g.fillRect(bar.withTop(bar.getBottom() - juce::roundToInt(static_cast<float>(bar.getHeight()) * pos)));
-
-    if (db >= kClipDb)
-      clipUntilMs[i] = nowMs + kClipHoldMs;
-    if (static_cast<juce::int32>(clipUntilMs[i] - nowMs) > 0) {
-      g.setColour(kWarn);
-      g.fillEllipse(static_cast<float>(x + (meterW - clipSize) / 2), static_cast<float>(lowerTop - 6),
-                    static_cast<float>(clipSize), static_cast<float>(clipSize));
-    }
-
-    g.setColour(kDim);
-    g.setFont(font(12.0f, true));
-    g.drawText(meterNames[i], x - 4, bar.getBottom() + 3, meterW + 8, labelH, juce::Justification::centred);
   }
 }
 

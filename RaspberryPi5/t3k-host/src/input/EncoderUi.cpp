@@ -9,8 +9,8 @@ namespace t3k {
 
 namespace {
 
-// Stepping through models loads only once the encoder has come to rest.
-constexpr int kModelLoadDelayMs = 350;
+// Stepping through presets loads only once the encoder has come to rest.
+constexpr int kPresetLoadDelayMs = 350;
 
 // Faster turning takes bigger steps on the continuous values.
 int stepFor(juce::uint32 msSinceLastDetent) {
@@ -20,7 +20,13 @@ int stepFor(juce::uint32 msSinceLastDetent) {
 }  // namespace
 
 EncoderUi::EncoderUi(TONE3000Processor& p, UiState& s, DisplayUi* d)
-    : juce::Thread("encoder"), processor(p), state(s), display(d) {}
+    : juce::Thread("encoder"), processor(p), state(s), display(d) {
+  const auto list = processor.getPresetList();
+  if (const auto* items = list["presets"].getArray())
+    for (const auto& item : *items)
+      presets.push_back({item["id"].toString(), item["name"].toString()});
+  state.presetCount = static_cast<int>(presets.size());
+}
 
 EncoderUi::~EncoderUi() {
   stopTimer();
@@ -28,19 +34,11 @@ EncoderUi::~EncoderUi() {
   state.active = false;
 }
 
-void EncoderUi::setTonesDir(const juce::File& dir) {
-  tones.clear();
-  for (const auto& file : dir.findChildFiles(juce::File::findFiles, false))
-    if (file.getFileExtension().equalsIgnoreCase(".nam"))
-      tones.add(file);
-  std::sort(tones.begin(), tones.end(), [](const juce::File& a, const juce::File& b) {
-    return a.getFileName().compareNatural(b.getFileName()) < 0;
-  });
-}
-
-void EncoderUi::setCurrentTone(const juce::File& file, const std::string& blockId) {
-  toneIndex = tones.indexOf(file);
-  toneBlockId = blockId;
+void EncoderUi::setCurrentPreset(const juce::String& name) {
+  for (size_t i = 0; i < presets.size(); ++i)
+    if (presets[i].name.equalsIgnoreCase(name))
+      presetIndex = static_cast<int>(i);
+  state.presetIndex = presetIndex;
 }
 
 juce::String EncoderUi::start(const EncoderPins& pins) {
@@ -77,10 +75,18 @@ void EncoderUi::run() {
 }
 
 void EncoderUi::handle(EncoderEvent event, int step) {
+  const int selected = state.selected.load();
+  const int blockCount = static_cast<int>(state.getChain().tones().size());
+  const auto target = cursorTarget(selected, blockCount);
+
   if (event.kind == EncoderEvent::Kind::Press) {
+    if (target.isBlock) {  // on/off right away, no edit level
+      toggleBlock(target.block);
+      return;
+    }
     const bool leaving = state.editing.load();
-    if (leaving && isTimerRunning())  // a model is still waiting to load
-      loadPendingModel();
+    if (leaving && isTimerRunning())  // a preset is still waiting to load
+      loadPendingPreset();
     state.editing = !leaving;
     return;
   }
@@ -89,16 +95,26 @@ void EncoderUi::handle(EncoderEvent event, int step) {
 
   if (!state.editing.load()) {
     // The cursor wraps around at both ends.
-    state.selected = (state.selected.load() + event.delta + kUiItemCount) % kUiItemCount;
+    const int itemCount = kUiItemCount + blockCount;
+    state.selected = (selected + event.delta + itemCount) % itemCount;
     return;
   }
-  adjust(static_cast<UiItem>(state.selected.load()), event.delta, step);
+  adjust(target.item, event.delta, step);
+}
+
+void EncoderUi::toggleBlock(int toneIndex) {
+  const auto chain = state.getChain();
+  const auto tones = chain.tones();
+  if (!juce::isPositiveAndBelow(toneIndex, static_cast<int>(tones.size())))
+    return;
+  const auto& cell = *tones[static_cast<size_t>(toneIndex)];
+  processor.setBlockParam(cell.id, "enabled", cell.enabled ? 0.0 : 1.0);
 }
 
 void EncoderUi::adjust(UiItem item, int delta, int step) {
   const float move = static_cast<float>(delta * step);
   switch (item) {
-    case UiItem::Model: stepModel(delta); break;
+    case UiItem::Preset: stepPreset(delta); break;
     case UiItem::Gain: set("inputLevel", get("inputLevel") + move * 0.01f); break;
     case UiItem::Bass: set("toneBass", get("toneBass") + move * 0.1f); break;
     case UiItem::Mid: set("toneMid", get("toneMid") + move * 0.1f); break;
@@ -126,31 +142,30 @@ void EncoderUi::adjust(UiItem item, int delta, int step) {
   }
 }
 
-void EncoderUi::stepModel(int delta) {
-  if (tones.isEmpty())
+void EncoderUi::stepPreset(int delta) {
+  if (presets.empty())
     return;
-  toneIndex = toneIndex < 0 ? 0 : (toneIndex + delta + tones.size()) % tones.size();
+  const int count = static_cast<int>(presets.size());
+  presetIndex = presetIndex < 0 ? 0 : (presetIndex + delta + count) % count;
+  state.presetIndex = presetIndex;
   if (display != nullptr)
-    display->setTitle(tones[toneIndex].getFileNameWithoutExtension());
-  startTimer(kModelLoadDelayMs);
+    display->setTitle(presets[static_cast<size_t>(presetIndex)].name);
+  startTimer(kPresetLoadDelayMs);
 }
 
 void EncoderUi::timerCallback() {
-  loadPendingModel();
+  loadPendingPreset();
 }
 
-void EncoderUi::loadPendingModel() {
+void EncoderUi::loadPendingPreset() {
   stopTimer();
-  if (!juce::isPositiveAndBelow(toneIndex, tones.size()))
+  if (!juce::isPositiveAndBelow(presetIndex, static_cast<int>(presets.size())))
     return;
-  const auto file = tones[toneIndex];
-  const auto result = processor.loadLocalTonePath(file, toneBlockId);
-  if (result.hasProperty("error")) {
-    std::cerr << "Tone not loaded: " << result["error"].toString() << std::endl;
-    return;
-  }
-  toneBlockId = result["blockId"].toString().toStdString();
-  std::cout << "Tone loaded: " << file.getFileName() << std::endl;
+  const auto& preset = presets[static_cast<size_t>(presetIndex)];
+  if (processor.loadPreset(preset.id))
+    std::cout << "Preset loaded: " << preset.name << std::endl;
+  else
+    std::cerr << "Preset not loaded: " << preset.name << std::endl;
 }
 
 float EncoderUi::get(const char* paramId) const {

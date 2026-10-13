@@ -7,6 +7,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include <atomic>
+#include <map>
 #include <vector>
 
 #include "SpiLcd.h"
@@ -36,6 +37,7 @@ private:
   void drawSplash(juce::Graphics& g) const;
   void drawMain(juce::Graphics& g);
   void present(const juce::Image& frame);
+  const juce::Image& glyphFor(const juce::String& gear) const;
 
   TONE3000Processor& processor;
   juce::AudioDeviceManager& deviceManager;
@@ -44,6 +46,8 @@ private:
   std::vector<uint16_t> shown;    // what the panel currently displays
   std::vector<uint16_t> pending;  // the frame being sent
   bool firstFrame{true};
+  // Gear pictograms as alpha masks, rendered once on the message thread.
+  std::map<juce::String, juce::Image> glyphs;
   juce::uint32 clipUntilMs[2]{0, 0};  // input, output: clip light stays on until then
   std::atomic<bool> mainRequested{false};
   juce::CriticalSection titleLock;

@@ -98,6 +98,8 @@ target_sources(t3k-host PRIVATE
 target_include_directories(t3k-host PRIVATE
     src
     ${T3K_PLUGIN}/include
+    # Gear pictograms (ui/core/GearGlyphs.h, header only).
+    ${T3K_PLUGIN}/ui
     ${T3K_PLUGIN}/AudioDSPTools
     ${T3K_PLUGIN}/AudioDSPTools/dsp/ResamplingContainer/Dependencies
 )
