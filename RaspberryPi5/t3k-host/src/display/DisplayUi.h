@@ -1,0 +1,50 @@
+// DisplayUi: draws the device screen on the SPI display from its own
+// low-priority thread. Reads the processor through its parameters and meter
+// poll only; never touches the audio thread.
+
+#pragma once
+
+#include <juce_audio_utils/juce_audio_utils.h>
+
+#include <atomic>
+#include <vector>
+
+#include "SpiLcd.h"
+
+class TONE3000Processor;
+
+namespace t3k {
+
+class DisplayUi : private juce::Thread {
+public:
+  DisplayUi(TONE3000Processor& processor, juce::AudioDeviceManager& deviceManager);
+  ~DisplayUi() override;
+
+  /** Opens the display and shows the splash screen. Returns an error
+      message, empty on success. */
+  juce::String start(const LcdConfig& config);
+
+  /** Text for the top line of the main screen (tone or preset name). */
+  void setTitle(const juce::String& text);
+
+  /** Leave the splash screen (it stays up for a minimum time regardless). */
+  void showMain() { mainRequested = true; }
+
+private:
+  void run() override;
+  void drawSplash(juce::Graphics& g) const;
+  void drawMain(juce::Graphics& g);
+  void present(const juce::Image& frame);
+
+  TONE3000Processor& processor;
+  juce::AudioDeviceManager& deviceManager;
+  SpiLcd lcd;
+  std::vector<uint16_t> shown;    // what the panel currently displays
+  std::vector<uint16_t> pending;  // the frame being sent
+  bool firstFrame{true};
+  std::atomic<bool> mainRequested{false};
+  juce::CriticalSection titleLock;
+  juce::String title;
+};
+
+}  // namespace t3k
