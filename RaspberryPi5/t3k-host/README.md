@@ -61,7 +61,9 @@ The screen text needs a font that fontconfig can find, for example DejaVu Sans i
 
 ## Encoder
 
-One rotary encoder with push button operates the device. On the top level, turning moves the cursor over preset, gain, bass, mid, treble, volume, gate, pitch, spread and then the blocks of the chain (wrapping around). A press enters the selected item, turning then changes its value, and another press leaves; in the preset item turning steps through the presets. On a block, a press switches it on or off.
+One rotary encoder with push button operates the device. On the top level, turning moves the cursor in screen order (wrapping around): preset, save, tuner, settings, the blocks of the chain, then gain, bass, mid, treble, volume, gate, pitch and spread. A press enters the selected item, turning then changes its value, and another press leaves; in the preset item turning steps through the presets. On a block, a press switches it on or off.
+
+A star next to the preset name marks unsaved changes; the save button writes the current sound back to the loaded preset. The tuner takes the grid's place while its item is entered. The settings button has no function yet. The line under the grid describes whatever the cursor is on.
 
 Presets are the plugin's `.t3kpreset` files in `~/.config/TONE3000/Presets/` (factory presets in `Presets/Factory/`). The chain is drawn as the plugin's grid: one row in mono, two in stereo, at least five slots wide.
 

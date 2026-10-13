@@ -45,6 +45,7 @@ private:
   void toggleBlock(int toneIndex);
   void stepPreset(int delta);
   void loadPendingPreset();
+  void savePreset();
   float get(const char* paramId) const;
   void set(const char* paramId, float value);
 

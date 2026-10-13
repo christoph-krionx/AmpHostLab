@@ -1,6 +1,8 @@
-// ChainWatcher: keeps UiState's picture of the chain in step with the
-// processor. Polls on the message thread; the processor answers with a
-// cheap "unchanged" while nothing happened.
+// ChainWatcher: keeps UiState in step with the processor. It mirrors the
+// chain, runs the tuner while the panel has it switched on, and notices
+// when the sound no longer matches the preset it was loaded from.
+// Polls on the message thread; the processor answers with a cheap
+// "unchanged" while the chain did not change.
 
 #pragma once
 
@@ -15,7 +17,7 @@ class ChainWatcher : private juce::Timer {
 public:
   ChainWatcher(TONE3000Processor& p, UiState& s) : processor(p), state(s) {
     timerCallback();
-    startTimer(150);
+    startTimer(40);
   }
 
 private:
@@ -47,10 +49,28 @@ private:
   }
 
   void timerCallback() override {
+    const bool tunerOn = state.tunerOn.load();
+    processor.setTunerEnabled(tunerOn);
+    state.tunerHz = tunerOn ? static_cast<float>(static_cast<double>(processor.getTunerReading()["frequency"])) : 0.0f;
+
+    readChain();
+
+    // Unsaved changes: compare what makes up the sound with how it was
+    // when the preset was loaded or last saved.
+    const auto now = soundPrint();
+    if (state.presetSaved.exchange(false) || presetId != baselinePresetId) {
+      baseline = now;
+      baselinePresetId = presetId;
+    }
+    state.presetDirty = now != baseline;
+  }
+
+  void readChain() {
     const auto chain = processor.getChainState(revision);
     if (static_cast<bool>(chain["unchanged"]))
       return;
     revision = static_cast<int>(chain["revision"]);
+    presetId = chain["preset"]["id"].toString();
 
     ChainView view;
     view.stereo = static_cast<bool>(chain["stereoEnabled"]);
@@ -70,24 +90,46 @@ private:
           view.offset[1 - trunk] = static_cast<int>(i) + 1;
     }
 
+    chainPrint.clear();
+    for (const auto& row : view.rows)
+      for (const auto& cell : row)
+        if (!cell.insert)
+          chainPrint << cell.name << (cell.enabled ? "+" : "-");
+
     // The blocks sit in the middle of the cursor order: when their number
     // changes, keep the cursor on the knob or switch it was on, and move
     // it off a block that is gone.
     const int oldBlocks = static_cast<int>(state.getChain().tones().size());
     const int newBlocks = static_cast<int>(view.tones().size());
     const int position = state.selected.load();
-    if (position > oldBlocks) {
+    if (position >= kUiHeadItems + oldBlocks) {
       state.selected = position + newBlocks - oldBlocks;
-    } else if (position > newBlocks) {
+    } else if (position >= kUiHeadItems + newBlocks) {
       state.selected = 0;
       state.editing = false;
     }
     state.setChain(std::move(view));
   }
 
+  // Everything a preset stores that the panel can change: the blocks'
+  // on/off state and the parameters, minus those that describe the
+  // machine rather than the sound.
+  juce::String soundPrint() const {
+    juce::String print = chainPrint;
+    for (auto* p : static_cast<juce::AudioProcessor&>(processor).getParameters())
+      if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*>(p))
+        if (!TONE3000Processor::isMachineDefaultParameter(ranged->getParameterID()))
+          print << "|" << juce::String(ranged->getValue(), 4);
+    return print;
+  }
+
   TONE3000Processor& processor;
   UiState& state;
   int revision{-1};
+  juce::String presetId;
+  juce::String chainPrint;
+  juce::String baseline;
+  juce::String baselinePresetId;
 };
 
 }  // namespace t3k

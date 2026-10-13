@@ -32,6 +32,7 @@ EncoderUi::~EncoderUi() {
   stopTimer();
   stopThread(1000);
   state.active = false;
+  state.tunerOn = false;
 }
 
 void EncoderUi::setCurrentPreset(const juce::String& name) {
@@ -87,7 +88,15 @@ void EncoderUi::handle(EncoderEvent event, int step) {
     const bool leaving = state.editing.load();
     if (leaving && isTimerRunning())  // a preset is still waiting to load
       loadPendingPreset();
+    if (target.item == UiItem::Settings)  // no function yet
+      return;
+    if (target.item == UiItem::Save) {
+      savePreset();
+      return;
+    }
     state.editing = !leaving;
+    if (target.item == UiItem::Tuner)  // the tuner runs while its item is entered
+      state.tunerOn = !leaving;
     return;
   }
   if (event.kind != EncoderEvent::Kind::Turn)
@@ -115,6 +124,9 @@ void EncoderUi::adjust(UiItem item, int delta, int step) {
   const float move = static_cast<float>(delta * step);
   switch (item) {
     case UiItem::Preset: stepPreset(delta); break;
+    case UiItem::Save:
+    case UiItem::Tuner:
+    case UiItem::Settings: break;
     case UiItem::Gain: set("inputLevel", get("inputLevel") + move * 0.01f); break;
     case UiItem::Bass: set("toneBass", get("toneBass") + move * 0.1f); break;
     case UiItem::Mid: set("toneMid", get("toneMid") + move * 0.1f); break;
@@ -151,6 +163,23 @@ void EncoderUi::stepPreset(int delta) {
   if (display != nullptr)
     display->setTitle(presets[static_cast<size_t>(presetIndex)].name);
   startTimer(kPresetLoadDelayMs);
+}
+
+// Writes the current sound back to the preset it came from.
+void EncoderUi::savePreset() {
+  if (isTimerRunning())  // a preset is still waiting to load
+    loadPendingPreset();
+  if (!juce::isPositiveAndBelow(presetIndex, static_cast<int>(presets.size())))
+    return;
+  const auto name = presets[static_cast<size_t>(presetIndex)].name;
+  const auto saved = processor.savePreset(name);
+  if (!saved.hasProperty("id")) {
+    std::cerr << "Preset not saved: " << name << std::endl;
+    return;
+  }
+  presets[static_cast<size_t>(presetIndex)].id = saved["id"].toString();
+  state.presetSaved = true;
+  std::cout << "Preset saved: " << name << std::endl;
 }
 
 void EncoderUi::timerCallback() {

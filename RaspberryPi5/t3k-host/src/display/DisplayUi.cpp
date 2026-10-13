@@ -2,6 +2,7 @@
 
 #include "Processor.h"
 #include "core/GearGlyphs.h"
+#include "core/LucideIcons.h"
 
 namespace t3k {
 
@@ -70,6 +71,8 @@ DisplayUi::DisplayUi(TONE3000Processor& p, juce::AudioDeviceManager& dm, const U
   for (const char* gear : {"amp", "amp-cab", "pedal", "outboard", "cab", "space", "experimental", "ir"})
     glyphs[gear] = renderGlyph(ui::gear::svgFor(gear), kGlyphSize);
   glyphs["file"] = renderGlyph(ui::gear::kFileIcon, kGlyphSize);
+  glyphs["settings"] = renderGlyph(ui::lucideSvg(ui::Icon::Settings), kGlyphSize);
+  glyphs["save"] = renderGlyph(ui::lucideSvg(ui::Icon::Save), kGlyphSize);
 }
 
 const juce::Image& DisplayUi::glyphFor(const juce::String& gear) const {
@@ -171,7 +174,8 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   const int switchTop = knobTop + knobH + gap;
   const int switchH = 24;
 
-  // Preset name left, audio load right (red once the device dropped out).
+  // Preset name left, with a star while it has unsaved changes; save,
+  // tuner and settings buttons right.
   juce::String name;
   {
     const juce::ScopedLock lock(titleLock);
@@ -180,14 +184,51 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   int xruns = 0;
   if (auto* dev = deviceManager.getCurrentAudioDevice())
     xruns = dev->getXRunCount();
-  cursor(UiItem::Preset, juce::Rectangle<int>(2, titleTop, w - 76, titleH).toFloat());
+  const bool tunerOn = state.tunerOn.load();
+  const juce::Rectangle<int> settingsBox(w - 2 - titleH, titleTop, titleH, titleH);
+  const juce::Rectangle<int> tunerBox(settingsBox.getX() - gap - titleH, titleTop, titleH, titleH);
+  const juce::Rectangle<int> saveBox(tunerBox.getX() - gap - titleH, titleTop, titleH, titleH);
+  const bool dirty = state.presetDirty.load();
+  const int titleW = saveBox.getX() - gap - 2;
+  const int starW = 16;
+  cursor(UiItem::Preset, juce::Rectangle<int>(2, titleTop, titleW, titleH).toFloat());
+  const auto titleFont = font(20.0f, true);
   g.setColour(kText);
-  g.setFont(font(20.0f, true));
-  g.drawText(name, 8, titleTop, w - 86, titleH, juce::Justification::centredLeft, true);
-  g.setColour(xruns > 0 ? kWarn : kDim);
-  g.setFont(font(14.0f));
-  g.drawText(juce::String(juce::roundToInt(static_cast<double>(levels["cpu"]) * 100.0)) + " %",
-             w - 70, titleTop, 62, titleH, juce::Justification::centredRight);
+  g.setFont(titleFont);
+  g.drawText(name, 8, titleTop, titleW - 10 - starW, titleH, juce::Justification::centredLeft, true);
+  if (dirty) {
+    juce::GlyphArrangement measure;
+    measure.addLineOfText(titleFont, name, 0.0f, 0.0f);
+    const int nameW = juce::roundToInt(measure.getBoundingBox(0, -1, true).getWidth());
+    g.setColour(kAccent);
+    g.drawText("*", 8 + juce::jmin(nameW + 3, titleW - 10 - starW), titleTop, starW, titleH, juce::Justification::centredLeft);
+  }
+
+  // Save button: lit while there is something to save.
+  cursor(UiItem::Save, saveBox.toFloat());
+  g.setColour(dirty ? kAccent : kDim);
+  g.drawImage(glyphs.at("save"), saveBox.toFloat().reduced(6.0f), juce::RectanglePlacement::centred, true);
+
+  // Tuner button: a tuning fork.
+  cursor(UiItem::Tuner, tunerBox.toFloat());
+  {
+    const auto c = tunerBox.toFloat().getCentre();
+    juce::Path fork;
+    fork.startNewSubPath(c.x - 4.0f, c.y - 9.0f);
+    fork.lineTo(c.x - 4.0f, c.y - 2.0f);
+    fork.quadraticTo(c.x - 4.0f, c.y + 2.0f, c.x, c.y + 2.0f);
+    fork.quadraticTo(c.x + 4.0f, c.y + 2.0f, c.x + 4.0f, c.y - 2.0f);
+    fork.lineTo(c.x + 4.0f, c.y - 9.0f);
+    fork.startNewSubPath(c.x, c.y + 2.0f);
+    fork.lineTo(c.x, c.y + 9.0f);
+    g.setColour(tunerOn ? kAccent : kDim);
+    g.strokePath(fork, juce::PathStrokeType(2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+  }
+
+  // Settings button.
+  cursor(UiItem::Settings, settingsBox.toFloat());
+  g.setColour(kDim);
+  g.drawImage(glyphs.at("settings"), settingsBox.toFloat().reduced(6.0f), juce::RectanglePlacement::centred, true);
 
   // Input level far left, output level far right, -60..0 dB, filling
   // upwards, each with a clip light on top that stays on for a moment.
@@ -230,7 +271,9 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   // empty slots faint.
   const int gridLeft = meterMargin + meterW + 12;
   const int gridRows = chain.stereo ? 2 : 1;
-  const int rowH = juce::jmin(44, (gridH - (gridRows - 1) * gap) / gridRows);
+  // A single row takes the whole height, so the grid fills the same band
+  // in mono and stereo.
+  const int rowH = (gridH - (gridRows - 1) * gap) / gridRows;
   const int rowsTop = gridTop + (gridH - gridRows * rowH - (gridRows - 1) * gap) / 2;
   int slots = 5;
   for (int row = 0; row < gridRows; ++row)
@@ -238,7 +281,40 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   const int slotW = (w - 2 * gridLeft - (slots - 1) * gap) / slots;
   int toneIndex = 0;
   juce::String selectedBlockName;
-  for (int row = 0; row < gridRows; ++row) {
+  // While the tuner is on it takes the grid's place.
+  juce::String tunerText;
+  if (tunerOn) {
+    const juce::Rectangle<int> zone(gridLeft, gridTop, w - 2 * gridLeft, gridH);
+    const float hz = state.tunerHz.load();
+    const int barY = zone.getBottom() - 12;
+    const int half = zone.getWidth() / 2 - 8;
+    g.setColour(kTrack);
+    g.fillRect(zone.getCentreX() - half, barY, 2 * half, 4);
+    g.setColour(kDim);
+    g.fillRect(zone.getCentreX() - 1, barY - 6, 2, 16);
+    if (hz > 0.0f) {
+      static const char* const kNotes[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+      const float midi = 69.0f + 12.0f * std::log2(hz / 440.0f);
+      const int nearest = juce::roundToInt(midi);
+      const float cents = (midi - static_cast<float>(nearest)) * 100.0f;
+      const bool inTune = std::abs(cents) <= 5.0f;
+      const juce::String note = juce::String(kNotes[((nearest % 12) + 12) % 12]) + juce::String(nearest / 12 - 1);
+      g.setColour(inTune ? kMeter : kText);
+      g.setFont(font(40.0f, true));
+      g.drawText(note, zone.withTrimmedBottom(20), juce::Justification::centred);
+      // The marker's distance from the centre is the deviation, 50 cents at either end.
+      const int markerX = zone.getCentreX() + juce::roundToInt(juce::jlimit(-1.0f, 1.0f, cents / 50.0f) * static_cast<float>(half));
+      g.setColour(inTune ? kMeter : kAccent);
+      g.fillRect(markerX - 3, barY - 6, 6, 16);
+      tunerText = juce::String(hz, 1) + " Hz   " + (cents >= 0.0f ? "+" : "") + juce::String(juce::roundToInt(cents)) + " cent";
+    } else {
+      g.setColour(kDim);
+      g.setFont(font(40.0f, true));
+      g.drawText("--", zone.withTrimmedBottom(20), juce::Justification::centred);
+      tunerText = "Play a single string";
+    }
+  }
+  for (int row = 0; row < (tunerOn ? 0 : gridRows); ++row) {
     const auto& cells = chain.rows[row];
     for (int i = 0; i < static_cast<int>(cells.size()); ++i) {
       const auto& cell = cells[static_cast<size_t>(i)];
@@ -324,7 +400,14 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   juce::String context = selectedBlockName;
   if (cursorOn && !target.isBlock) {
     const auto item = target.item;
-    if (item == UiItem::Preset) {
+    if (item == UiItem::Save) {
+      context = dirty ? "Save changes to " + name : juce::String("No changes to save");
+    } else if (item == UiItem::Tuner) {
+      context = tunerOn ? tunerText : juce::String("Tuner");
+    } else if (item == UiItem::Settings) {
+      context = "Settings   CPU " + juce::String(juce::roundToInt(static_cast<double>(levels["cpu"]) * 100.0)) + " %   "
+                + juce::String(xruns) + " dropouts";
+    } else if (item == UiItem::Preset) {
       const int index = state.presetIndex.load();
       const int count = state.presetCount.load();
       context = index >= 0 ? "Preset " + juce::String(index + 1) + " of " + juce::String(count)
