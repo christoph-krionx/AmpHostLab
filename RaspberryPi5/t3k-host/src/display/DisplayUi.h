@@ -57,7 +57,10 @@ private:
   int frameH{0};
   // Gear pictograms as alpha masks, rendered once on the message thread.
   std::map<juce::String, juce::Image> glyphs;
-  juce::uint32 clipUntilMs[2]{0, 0};  // input, output: clip light stays on until then
+  float peakDb[2]{-100.0f, -100.0f};   // input, output: the level shown in numbers
+  juce::uint32 peakUntilMs[2]{0, 0};   // ... held until then
+  juce::String address;                // the device's network address, for the settings page
+  juce::uint32 addressCheckedMs{0};
   std::atomic<bool> mainRequested{false};
   juce::CriticalSection titleLock;  // guards title and status
   juce::String title;

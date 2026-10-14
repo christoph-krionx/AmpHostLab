@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.22)
 # Compiles the processor sources straight from a tone3000-plugin checkout
 # (same recipe as the plugin's own test/CMakeLists.txt, HEADLESS=1) and
 # drives it from an ALSA device. No editor, no plugin format, no window.
-project(t3k-host VERSION 0.2.0 LANGUAGES C CXX)
+project(t3k-host VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

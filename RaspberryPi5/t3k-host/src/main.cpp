@@ -71,7 +71,7 @@ void printUsage() {
                "  --preview <png>       draw the screen into a PNG (320x240) and exit, no audio\n"
                "  --preview-cursor <n>  cursor position in the preview (default: no cursor)\n"
                "  --preview-edit        show the cursor in edit mode\n"
-               "  --preview-page <name> page in the preview: overview | gate | pitch | spread | block\n"
+               "  --preview-page <name> page in the preview: overview | gate | pitch | spread | block | settings\n"
                "  --encoder <a,b,sw>    front-panel encoder on these GPIOs (e.g. 5,6,26)\n"
                "  --lcd <panel>        SPI display: none | ili9341 | st7789 (default none)\n"
                "  --lcd-rotation <0..3> quarter turns (default 1, landscape)\n"
@@ -243,9 +243,11 @@ int main(int argc, char** argv) {
     if (opt.preset.isNotEmpty()) {
       const auto list = processor.getPresetList();
       if (const auto* presets = list["presets"].getArray())
-        for (const auto& p : *presets)
-          if (p["name"].toString().equalsIgnoreCase(opt.preset))
-            processor.loadPreset(p["id"].toString());
+        for (int i = 0; i < presets->size(); ++i)
+          if ((*presets)[i]["name"].toString().equalsIgnoreCase(opt.preset)) {
+            processor.loadPreset((*presets)[i]["id"].toString());
+            previewState.presetIndex = i;
+          }
       previewUi.setTitle(opt.preset);
     }
     t3k::ChainWatcher previewWatcher(processor, previewState);
@@ -255,7 +257,7 @@ int main(int argc, char** argv) {
       const auto previewChain = previewState.getChain();
       if (const auto tones = previewChain.tones(); !tones.empty())
         previewState.setPageBlock(tones.front()->id);
-      const juce::StringArray pageNames{"overview", "gate", "pitch", "spread", "block"};
+      const juce::StringArray pageNames{"overview", "gate", "pitch", "spread", "block", "settings"};
       previewState.page = juce::jmax(0, pageNames.indexOf(opt.previewPage, true));
       previewState.active = opt.previewCursor >= 0;
       previewState.selected = juce::jmax(0, opt.previewCursor);
@@ -396,12 +398,16 @@ int main(int argc, char** argv) {
   if (opt.encoder.isNotEmpty()) {
     panel = std::make_unique<t3k::PanelUi>(processor, uiState, display.get());
     panel->setCurrentPreset(opt.preset);
-    // The preset turned to last comes back on the next start.
-    if (configFile.existsAsFile())
-      panel->onPresetLoaded = [configFile](const juce::String& name) {
-        if (!t3k::HostConfig::rememberPreset(configFile, name))
+    // The preset turned to last and the settings changed on the panel come
+    // back on the next start.
+    if (configFile.existsAsFile()) {
+      const auto remember = [configFile](const juce::String& key, const juce::String& value) {
+        if (!t3k::HostConfig::rememberSetting(configFile, key, value))
           std::cerr << "Could not write " << configFile.getFullPathName() << std::endl;
       };
+      panel->onPresetLoaded = [remember](const juce::String& name) { remember("preset", name); };
+      panel->onSettingChanged = remember;
+    }
     encoder = std::make_unique<t3k::EncoderInput>([&panel](const t3k::InputEvent& event) {
       if (panel != nullptr)
         panel->handle(event);

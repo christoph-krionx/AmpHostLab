@@ -156,14 +156,16 @@ void PanelUi::press(const Target& target) {
           state.editing = true;
           break;
         case HeadItem::Preset: state.editing = true; break;
-        case HeadItem::Settings: break;  // no function yet
+        case HeadItem::Settings: openPage(Page::Settings); break;
       }
       break;
     case TargetKind::Switch: toggle(pageDef(kSwitchPages[target.index]).enableParam); break;
     case TargetKind::Block: toggleBlock(target.index); break;
     case TargetKind::Entry: {
       const auto& entry = def.entries[static_cast<size_t>(target.index)];
-      if (entry.kind != EntryKind::Param)
+      if (entry.kind == EntryKind::InputMode)
+        state.editing = true;
+      else if (entry.kind != EntryKind::Param)
         pressBlockEntry(entry.kind);
       else if (isChoice(entry.paramId))
         state.editing = true;
@@ -203,7 +205,8 @@ void PanelUi::pressBlockEntry(EntryKind kind) {
       else
         state.removeArmed = true;
       break;
-    case EntryKind::Param: break;
+    case EntryKind::Param:
+    case EntryKind::InputMode: break;
   }
 }
 
@@ -228,6 +231,8 @@ void PanelUi::turnEditing(const Target& target, int delta, int step) {
       const auto& entry = pageDef(state.currentPage()).entries[static_cast<size_t>(target.index)];
       if (entry.kind == EntryKind::BlockModel)
         stepModel(delta);
+      else if (entry.kind == EntryKind::InputMode)
+        stepInputMode(delta);
       else
         stepChoice(entry.paramId, delta);
       break;
@@ -247,6 +252,9 @@ void PanelUi::endEditing(const Target& target) {
     ++modelRequest;  // nothing scheduled loads after this
     applyModel(true);
   }
+  // The input mode is kept for the next start.
+  if (target.kind == TargetKind::Entry && state.currentPage() == Page::Settings && onSettingChanged)
+    onSettingChanged("input-mode", TONE3000Processor::inputModeToString(processor.getInputMode()));
   state.editing = false;
 }
 
@@ -255,7 +263,8 @@ void PanelUi::openPage(Page page) {
   state.editing = false;
   state.tunerOn = false;
   state.page = static_cast<int>(page);
-  state.selected = 1;  // the page's own on/off, right after save
+  // The page's own on/off, right after save; the settings page has no save.
+  state.selected = page == Page::Settings ? 0 : 1;
 }
 
 void PanelUi::openBlockPage(int toneIndex) {
@@ -367,6 +376,17 @@ void PanelUi::setBlockSwitch(const char* name, bool on) {
     return;
   const juce::String which(name);
   state.updateCell(id, [&which, on](ChainCell& cell) { (which == "enabled" ? cell.enabled : cell.normalize) = on; });
+}
+
+// Switches right away, so the difference can be heard while turning.
+void PanelUi::stepInputMode(int delta) {
+  const int current = static_cast<int>(processor.getInputMode());
+  int index = 0;
+  for (int i = 0; i < static_cast<int>(std::size(kInputModes)); ++i)
+    if (kInputModes[i] == current)
+      index = i;
+  index = juce::jlimit(0, static_cast<int>(std::size(kInputModes)) - 1, index + delta);
+  processor.setInputMode(static_cast<TONE3000Processor::InputMode>(kInputModes[index]));
 }
 
 void PanelUi::stepModel(int delta) {

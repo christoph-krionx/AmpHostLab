@@ -3,8 +3,8 @@
 // a comment, keys are the command-line option names without "--" ("set" may
 // repeat). A leading "~/" in a value stands for the home directory.
 //
-// The host writes back only the "preset" line (the preset loaded last) and
-// leaves every other line, comments included, as it is.
+// The host writes back only what the panel changes (the preset loaded last,
+// the input mode) and leaves every other line, comments included, as it is.
 
 #pragma once
 
@@ -46,10 +46,10 @@ inline bool read(const juce::File& file, juce::StringArray& args, juce::String& 
   return true;
 }
 
-/** Sets the "preset" line to `name`, appending one if there is none. The
+/** Sets the `key` line to `value`, appending one if there is none. The
     file is replaced in one step, so a power cut leaves the old or the new
     file, never half of one. */
-inline bool rememberPreset(const juce::File& file, const juce::String& name) {
+inline bool rememberSetting(const juce::File& file, const juce::String& key, const juce::String& value) {
   juce::StringArray lines;
   file.readLines(lines);
   // readLines leaves an empty last entry for the final newline.
@@ -57,14 +57,14 @@ inline bool rememberPreset(const juce::File& file, const juce::String& name) {
     lines.remove(lines.size() - 1);
   bool found = false;
   for (auto& line : lines) {
-    if (keyOf(line) == "preset") {
-      line = "preset = " + name;
+    if (keyOf(line) == key) {
+      line = key + " = " + value;
       found = true;
       break;
     }
   }
   if (!found)
-    lines.add("preset = " + name);
+    lines.add(key + " = " + value);
 
   juce::TemporaryFile temp(file);
   if (!temp.getFile().replaceWithText(lines.joinIntoString("\n") + "\n"))

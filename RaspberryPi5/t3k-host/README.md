@@ -44,7 +44,7 @@ t3k-host --device Scarlett --block 64 --tone ~/tones/my-amp.nam
 | `--lcd-speed <hz>` | SPI clock, default 16000000 |
 | `--encoder <a,b,sw>` | Front-panel encoder on these BCM GPIOs, e.g. `5,6,26` |
 | `--preview <png>` | Draw the main screen into a 320x240 PNG and exit, no audio |
-| `--preview-cursor <n>` / `--preview-edit` / `--preview-page <name>` | Cursor position, edit mode and page (`overview`, `gate`, `pitch`, `spread`, `block`) in the preview |
+| `--preview-cursor <n>` / `--preview-edit` / `--preview-page <name>` | Cursor position, edit mode and page (`overview`, `gate`, `pitch`, `spread`, `block`, `settings`) in the preview |
 
 ### Settings file
 
@@ -91,7 +91,7 @@ The screen text needs a font that fontconfig can find, for example DejaVu Sans i
 
 ## Encoder
 
-The screen has the same frame on every page: the preset name with the save, tuner and settings buttons, the effect switches (gate, pitch, spread), the stage between the input and output meters, a context line, and along the bottom edge five knob slots, one above each of the (planned) value encoders.
+The screen has the same frame on every page: the preset name (large, with its place in the preset list in front) with the save, tuner and settings buttons, the effect switches (gate, pitch, spread), the stage between the input and output meters (with the level in dB underneath, its peak held for three seconds and red after clipping), a context line, and along the bottom edge five knob slots, one above each of the (planned) value encoders.
 
 The navigation encoder with push button operates the device. Turning moves the cursor in screen order (wrapping around). On the overview: preset, save, tuner, settings, the effect switches, the blocks of the chain, then the knobs gain, bass, mid, treble and volume.
 
@@ -102,7 +102,9 @@ The gate, pitch and spread pages list their switches on the stage and put their 
 
 A block's page has the block's input, output and mix in the knob row, and on the stage: the block on or off, normalize, the model (for a local tone with several models a press starts picking; the model loads while turning, once the encoder rests), and move and remove. Move goes back to the grid with the block framed in blue: turning moves it one place along its row (empty slots count as places), a press puts it down. Remove asks once: a second press removes the block, turning keeps it. Until the value encoders are fitted, the navigation encoder's cursor also walks through the knob slots. Value encoders will work the slot above them directly: a short press toggles fine steps, a long press resets the knob.
 
-A star next to the preset name marks unsaved changes; the save button writes the current sound back to the loaded preset. The tuner takes the grid's place while its item is entered. The settings button has no function yet. The context line describes whatever the cursor is on.
+A star next to the preset name marks unsaved changes; the save button writes the current sound back to the loaded preset. The tuner takes the grid's place while its item is entered. The context line describes whatever the cursor is on; on the settings button it shows the CPU load and the dropouts.
+
+A press on the settings button opens the settings page: the input mode (left, right, stereo, dual mono) switches while turning and is written to the settings file when editing ends; below it the page shows the network address, CPU load, dropouts, sample rate and buffer, and the version. A long press goes back.
 
 `--preview <png> --preview-page gate --preview-cursor 1` draws a page into a PNG without audio, to check the layout.
 

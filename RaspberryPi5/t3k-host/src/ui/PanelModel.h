@@ -19,8 +19,8 @@
 
 namespace t3k {
 
-enum class Page { Overview, Gate, Pitch, Spread, Block };
-constexpr int kPageCount = 5;
+enum class Page { Overview, Gate, Pitch, Spread, Block, Settings };
+constexpr int kPageCount = 6;
 constexpr int kKnobSlots = 5;
 
 // The top line's items, left to right.
@@ -54,7 +54,7 @@ struct KnobDef {
 // A line on a page's stage. A parameter entry is a switch (bool, a press
 // flips it) or a choice (a press edits it, turning picks); the block page
 // has entries of its own.
-enum class EntryKind { Param, BlockOn, BlockNormalize, BlockModel, BlockMove, BlockRemove };
+enum class EntryKind { Param, BlockOn, BlockNormalize, BlockModel, BlockMove, BlockRemove, InputMode };
 struct EntryDef {
   const char* label;
   const char* paramId;
@@ -102,8 +102,23 @@ inline const PageDef& pageDef(Page page) {
        {{"INPUT", "Input", "inputGain", Format::GainDb, 1.0f, 0.0f, true, 0.5f},
         {"OUTPUT", "Output", "outputGain", Format::GainDb, 1.0f, 0.0f, true, 0.5f},
         {"MIX", "Mix", "mix", Format::Percent, 1.0f, 0.0f, true, 1.0f}}},
+      // Settings: the machine, not the sound; below the entries the stage
+      // shows network, load and version.
+      {"Settings", nullptr, {{"Input", nullptr, EntryKind::InputMode}}, {}},
   };
   return pages[static_cast<int>(page)];
+}
+
+// The input modes in the order the settings page steps through them,
+// with their names there. The plugin's own order differs.
+constexpr int kInputModes[] = {1, 2, 0, 3};  // left, right, stereo, dual mono
+inline const char* inputModeName(int mode) {
+  switch (mode) {
+    case 1: return "Left (input 1)";
+    case 2: return "Right (input 2)";
+    case 3: return "Dual mono";
+    default: return "Stereo";
+  }
 }
 
 // The switch row, left to right; each opens its page on a long press.
@@ -119,8 +134,9 @@ struct Target {
 
 /** The cursor stops of a page in screen order. On the overview: the top
     line, the switch row, the chain's tone blocks, the knobs. On a page:
-    save, the stage entries, the knobs. Knobs only while they are edited
-    with the navigation encoder (no value encoders). */
+    save (not on the settings page, which changes no sound), the stage
+    entries, the knobs. Knobs only while they are edited with the
+    navigation encoder (no value encoders). */
 inline std::vector<Target> cursorTargets(Page page, int blockCount, bool knobsInPath) {
   std::vector<Target> out;
   const auto& def = pageDef(page);
@@ -132,7 +148,8 @@ inline std::vector<Target> cursorTargets(Page page, int blockCount, bool knobsIn
     for (int i = 0; i < blockCount; ++i)
       out.push_back({TargetKind::Block, i});
   } else {
-    out.push_back({TargetKind::Head, static_cast<int>(HeadItem::Save)});
+    if (page != Page::Settings)
+      out.push_back({TargetKind::Head, static_cast<int>(HeadItem::Save)});
     for (int i = 0; i < static_cast<int>(def.entries.size()); ++i)
       out.push_back({TargetKind::Entry, i});
   }

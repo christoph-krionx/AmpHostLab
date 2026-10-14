@@ -17,11 +17,12 @@ constexpr int kRefreshMs = 2000;
 constexpr int kTile = 16;
 // Size the gear pictograms are rendered at; drawn smaller.
 constexpr int kGlyphSize = 48;
-// Level that counts as clipping, and how long the clip light stays on.
+// Level that counts as clipping: the number under the meter turns red.
 constexpr float kClipDb = -0.5f;
 // Above this level the meter bar turns orange.
 constexpr float kHotDb = -3.0f;
-constexpr juce::uint32 kClipHoldMs = 5000;
+// How long the level in numbers under a meter holds its peak.
+constexpr juce::uint32 kPeakHoldMs = 3000;
 
 const juce::Colour kBackground{0xff000000};
 const juce::Colour kAccent{0xffffa000};
@@ -199,11 +200,14 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   // where the value encoders sit, five equal slots.
   const int gap = 4;
   const int titleTop = 2;
-  const int titleH = 26;
+  // The preset name is big enough to read from a distance; the buttons
+  // beside it keep their size.
+  const int titleH = 34;
+  const int buttonSize = 26;
   const int switchTop = titleTop + titleH + gap;
   const int switchH = 20;
   const int stageTop = switchTop + switchH + gap;
-  const int stageH = 94;
+  const int stageH = 86;
   const int contextTop = stageTop + stageH + 2;
   const int contextH = 14;
   const int knobTop = contextTop + contextH + 3;
@@ -220,23 +224,45 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   if (auto* dev = deviceManager.getCurrentAudioDevice())
     xruns = dev->getXRunCount();
   const bool tunerOn = state.tunerOn.load();
-  const juce::Rectangle<int> settingsBox(w - 2 - titleH, titleTop, titleH, titleH);
-  const juce::Rectangle<int> tunerBox(settingsBox.getX() - gap - titleH, titleTop, titleH, titleH);
-  const juce::Rectangle<int> saveBox(tunerBox.getX() - gap - titleH, titleTop, titleH, titleH);
+  const int buttonTop = titleTop + (titleH - buttonSize) / 2;
+  const juce::Rectangle<int> settingsBox(w - 2 - buttonSize, buttonTop, buttonSize, buttonSize);
+  const juce::Rectangle<int> tunerBox(settingsBox.getX() - gap - buttonSize, buttonTop, buttonSize, buttonSize);
+  const juce::Rectangle<int> saveBox(tunerBox.getX() - gap - buttonSize, buttonTop, buttonSize, buttonSize);
   const bool dirty = state.presetDirty.load();
   const int titleW = saveBox.getX() - gap - 2;
   const int starW = 16;
   cursor(TargetKind::Head, static_cast<int>(HeadItem::Preset), juce::Rectangle<int>(2, titleTop, titleW, titleH).toFloat());
-  const auto titleFont = font(18.0f, true);
-  g.setColour(kText);
-  g.setFont(titleFont);
-  g.drawText(name, 8, titleTop, titleW - 10 - starW, titleH, juce::Justification::centredLeft, true);
-  if (dirty) {
+  const auto textWidth = [](const juce::Font& f, const juce::String& text) {
     juce::GlyphArrangement measure;
-    measure.addLineOfText(titleFont, name, 0.0f, 0.0f);
-    const int nameW = juce::roundToInt(measure.getBoundingBox(0, -1, true).getWidth());
+    measure.addLineOfText(f, text, 0.0f, 0.0f);
+    return juce::roundToInt(measure.getBoundingBox(0, -1, true).getWidth());
+  };
+  // The preset's place in the list (the order presets are stepped in) in
+  // front of its name; a tone loaded without a preset has none.
+  const int presetNumber = state.presetIndex.load() + 1;
+  const auto number = presetNumber > 0 ? juce::String(presetNumber).paddedLeft('0', 2) : juce::String();
+  // A long name shrinks a little before it gets cut.
+  auto titleFont = font(26.0f, true);
+  for (float size = 26.0f; size >= 20.0f; size -= 2.0f) {
+    titleFont = font(size, true);
+    const int numberW = number.isEmpty() ? 0 : textWidth(titleFont, number) + 8;
+    if (8 + numberW + textWidth(titleFont, name) + 2 + starW <= titleW)
+      break;
+  }
+  g.setFont(titleFont);
+  int textX = 8;
+  if (number.isNotEmpty()) {
     g.setColour(kAccent);
-    g.drawText("*", 8 + juce::jmin(nameW + 3, titleW - 10 - starW), titleTop, starW, titleH, juce::Justification::centredLeft);
+    g.drawText(number, textX, titleTop, titleW - 10, titleH, juce::Justification::centredLeft, false);
+    textX += textWidth(titleFont, number) + 8;
+  }
+  const int nameRoom = titleW - textX - 2 - starW;
+  g.setColour(kText);
+  g.drawText(name, textX, titleTop, nameRoom, titleH, juce::Justification::centredLeft, true);
+  if (dirty) {
+    g.setColour(kAccent);
+    g.drawText("*", textX + juce::jmin(textWidth(titleFont, name) + 3, nameRoom), titleTop, starW, titleH,
+               juce::Justification::centredLeft);
   }
 
   // Save button: lit while there is something to save.
@@ -261,9 +287,13 @@ void DisplayUi::drawMain(juce::Graphics& g) {
     g.strokePath(fork, juce::PathStrokeType(2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
   }
 
-  // Settings button.
+  // Settings button, framed while its page is open.
   cursor(TargetKind::Head, static_cast<int>(HeadItem::Settings), settingsBox.toFloat());
-  g.setColour(kDim.withMultipliedAlpha(headAlpha));
+  if (page == Page::Settings) {
+    g.setColour(kEdit);
+    g.drawRoundedRectangle(settingsBox.toFloat().reduced(1.0f), 6.0f, 2.0f);
+  }
+  g.setColour(kDim.withMultipliedAlpha(page == Page::Settings ? 1.0f : headAlpha));
   g.drawImage(glyphs.at("settings"), settingsBox.toFloat().reduced(5.0f), juce::RectanglePlacement::centred, true);
 
   // Effect switches under the top line: lit when on. On a page, its own
@@ -304,19 +334,17 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   }
 
   // Input level far left, output level far right, -60..0 dB, filling
-  // upwards, each with a clip light on top that stays on for a moment.
-  // They run the height of the stage and the context line together.
+  // upwards, with the level in numbers underneath. They run the height of
+  // the stage and the context line together.
   const int meterW = 10;
   const int meterMargin = 5;
-  const int clipSize = 8;
   const int labelH = 13;
   const int meterBottom = contextTop + contextH;
   const char* const meterKeys[] = {"input", "output"};
-  const char* const meterNames[] = {"I", "O"};
   const auto nowMs = juce::Time::getMillisecondCounter();
   for (int i = 0; i < 2; ++i) {
     const int x = i == 0 ? meterMargin : w - meterMargin - meterW;
-    const int barTop = stageTop + clipSize + 6;
+    const int barTop = stageTop;
     const juce::Rectangle<int> bar(x, barTop, meterW, meterBottom - labelH - barTop);
     const float db = meterDb(levels, meterKeys[i]);
     const float pos = juce::jlimit(0.0f, 1.0f, (db + 60.0f) / 60.0f);
@@ -333,17 +361,16 @@ void DisplayUi::drawMain(juce::Graphics& g) {
       g.fillRect(x - 3, y - 1, meterW + 6, 3);
     }
 
-    if (db >= kClipDb)
-      clipUntilMs[i] = nowMs + kClipHoldMs;
-    if (static_cast<juce::int32>(clipUntilMs[i] - nowMs) > 0) {
-      g.setColour(kWarn);
-      g.fillEllipse(static_cast<float>(x + (meterW - clipSize) / 2), static_cast<float>(stageTop),
-                    static_cast<float>(clipSize), static_cast<float>(clipSize));
+    // The level in numbers under the meter, its peak held for a moment;
+    // red after clipping.
+    if (db >= peakDb[i] || static_cast<juce::int32>(peakUntilMs[i] - nowMs) <= 0) {
+      peakDb[i] = db;
+      peakUntilMs[i] = nowMs + kPeakHoldMs;
     }
-
-    g.setColour(kDim);
-    g.setFont(font(12.0f, true));
-    g.drawText(meterNames[i], x - 4, meterBottom - labelH, meterW + 8, labelH, juce::Justification::centred);
+    const juce::String peakText = peakDb[i] <= -59.5f ? juce::String("--") : juce::String(juce::roundToInt(peakDb[i]));
+    g.setColour(peakDb[i] >= kClipDb ? kWarn : peakDb[i] > kHotDb ? kAccent : kDim);
+    g.setFont(font(11.0f, true));
+    g.drawText(peakText, x - 5, meterBottom - labelH, meterW + 10, labelH, juce::Justification::centred);
   }
 
   const int stageLeft = meterMargin + meterW + 8;
@@ -355,8 +382,8 @@ void DisplayUi::drawMain(juce::Graphics& g) {
     g.setColour(kText);
     g.setFont(font(15.0f, true));
     const juce::String pageTitle = page == Page::Block ? (pageCell != nullptr ? pageCell->name : juce::String()) : def.title;
-    g.drawText(pageTitle, stage.withHeight(18).withTrimmedLeft(6), juce::Justification::centredLeft, true);
-    const int rowH = 16;
+    g.drawText(pageTitle, stage.withHeight(17).withTrimmedLeft(6), juce::Justification::centredLeft, true);
+    const int rowH = 15;
     const auto choiceText = [](const juce::String& text) {
       return juce::String::fromUTF8("\xe2\x80\xb9 ") + text + juce::String::fromUTF8(" \xe2\x80\xba");
     };
@@ -364,7 +391,7 @@ void DisplayUi::drawMain(juce::Graphics& g) {
     int line = 0;
     for (int i = 0; i < static_cast<int>(def.entries.size()); ++i) {
       const auto& entry = def.entries[static_cast<size_t>(i)];
-      auto row = juce::Rectangle<int>(stage.getX(), stage.getY() + 20 + line * (rowH + 1), stage.getWidth(), rowH);
+      auto row = juce::Rectangle<int>(stage.getX(), stage.getY() + 19 + line * (rowH + 1), stage.getWidth(), rowH);
 
       // Move and remove: two buttons on one line.
       if (entry.kind == EntryKind::BlockMove || entry.kind == EntryKind::BlockRemove) {
@@ -413,6 +440,9 @@ void DisplayUi::drawMain(juce::Graphics& g) {
             value = pageCell->models.size() > 1 ? choiceText(modelName) : modelName;
           }
           break;
+        case EntryKind::InputMode:
+          value = choiceText(inputModeName(static_cast<int>(processor.getInputMode())));
+          break;
         case EntryKind::BlockMove:
         case EntryKind::BlockRemove: break;
       }
@@ -420,6 +450,35 @@ void DisplayUi::drawMain(juce::Graphics& g) {
       g.drawText(entry.label, row.withTrimmedLeft(8), juce::Justification::centredLeft, true);
       g.setColour(lit ? kAccent : kDim);
       g.drawText(value, row.withTrimmedRight(8).withTrimmedLeft(90), juce::Justification::centredRight, true);
+    }
+
+    // The settings page tells about the machine below its entries.
+    if (page == Page::Settings) {
+      if (address.isEmpty() || nowMs - addressCheckedMs > 5000) {
+        addressCheckedMs = nowMs;
+        address = "no network";
+        for (const auto& ip : juce::IPAddress::getAllAddresses())
+          if (!ip.isIPv6 && ip != juce::IPAddress::local()) {
+            address = ip.toString();
+            break;
+          }
+      }
+      juce::String audio;
+      if (auto* dev = deviceManager.getCurrentAudioDevice())
+        audio = juce::String(juce::roundToInt(dev->getCurrentSampleRate() / 1000.0)) + " kHz / " +
+                juce::String(dev->getCurrentBufferSizeSamples());
+      const juce::String info[] = {
+          "Network  " + address,
+          "CPU " + juce::String(juce::roundToInt(static_cast<double>(levels["cpu"]) * 100.0)) + " %   " +
+              juce::String(xruns) + " dropouts   " + audio,
+          juce::String::fromUTF8("v" T3K_HOST_VERSION "  \xc2\xb7  plugin " T3K_PLUGIN_REF),
+      };
+      g.setFont(font(12.0f));
+      g.setColour(kDim);
+      const int infoTop = stage.getY() + 19 + static_cast<int>(def.entries.size()) * (rowH + 1) + 4;
+      for (int i = 0; i < 3; ++i)
+        g.drawText(info[i], stage.getX() + 8, infoTop + i * 15, stage.getWidth() - 16, 15,
+                   juce::Justification::centredLeft, true);
     }
   } else if (tunerOn) {
     // While the tuner is on it takes the grid's place.
@@ -580,7 +639,7 @@ void DisplayUi::drawMain(juce::Graphics& g) {
         const auto& entry = def.entries[static_cast<size_t>(target.index)];
         const bool choice = entry.kind == EntryKind::Param
                                 ? dynamic_cast<juce::AudioParameterChoice*>(params.getParameter(entry.paramId)) != nullptr
-                                : entry.kind == EntryKind::BlockModel;
+                                : entry.kind == EntryKind::BlockModel || entry.kind == EntryKind::InputMode;
         if (editing)
           context = "Turn to choose, press when done";
         else if (entry.kind == EntryKind::BlockMove)

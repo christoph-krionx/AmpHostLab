@@ -42,6 +42,10 @@ public:
   /** Called on the message thread with the name of each preset loaded. */
   std::function<void(const juce::String&)> onPresetLoaded;
 
+  /** Called on the message thread when a machine setting changed on the
+      settings page, with its settings-file key and value. */
+  std::function<void(const juce::String& key, const juce::String& value)> onSettingChanged;
+
 private:
   struct Preset {
     juce::String id;
@@ -69,6 +73,7 @@ private:
 
   void toggleBlock(int toneIndex);
   void setBlockSwitch(const char* name, bool on);
+  void stepInputMode(int delta);
   void stepModel(int delta);
   void applyModel(bool finished);
   void startMove();
