@@ -61,6 +61,8 @@ private:
   juce::uint32 peakUntilMs[2]{0, 0};   // ... held until then
   juce::String address;                // the device's network address, for the settings page
   juce::uint32 addressCheckedMs{0};
+  juce::String cpuTemperature;         // e.g. "74 °C", empty when unknown
+  juce::uint32 temperatureCheckedMs{0};
   std::atomic<bool> mainRequested{false};
   juce::CriticalSection titleLock;  // guards title and status
   juce::String title;

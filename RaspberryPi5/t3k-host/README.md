@@ -102,7 +102,7 @@ The gate, pitch and spread pages list their switches on the stage and put their 
 
 A block's page has the block's input, output and mix in the knob row, and on the stage: the block on or off, normalize, the model (for a local tone with several models a press starts picking; the model loads while turning, once the encoder rests), and move and remove. Move goes back to the grid with the block framed in blue: turning moves it one place along its row (empty slots count as places), a press puts it down. Remove asks once: a second press removes the block, turning keeps it. Until the value encoders are fitted, the navigation encoder's cursor also walks through the knob slots. Value encoders will work the slot above them directly: a short press toggles fine steps, a long press resets the knob.
 
-A star next to the preset name marks unsaved changes; the save button writes the current sound back to the loaded preset. The tuner takes the grid's place while its item is entered. The context line describes whatever the cursor is on; on the settings button it shows the CPU load and the dropouts.
+A star next to the preset name marks unsaved changes; the save button writes the current sound back to the loaded preset. The tuner takes the grid's place while its item is entered. The context line describes whatever the cursor is on; on the settings button it shows the CPU load, the CPU temperature and the dropouts.
 
 A press on the settings button opens the settings page: the input mode (left, right, stereo, dual mono) switches while turning and is written to the settings file when editing ends; below it the page shows the network address, CPU load, dropouts, sample rate and buffer, and the version. A long press goes back.
 

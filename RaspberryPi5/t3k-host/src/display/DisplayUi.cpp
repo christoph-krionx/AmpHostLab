@@ -223,6 +223,17 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   int xruns = 0;
   if (auto* dev = deviceManager.getCurrentAudioDevice())
     xruns = dev->getXRunCount();
+  // CPU temperature for the load readouts, read every couple of seconds.
+  if (const auto frameMs = juce::Time::getMillisecondCounter();
+      temperatureCheckedMs == 0 || frameMs - temperatureCheckedMs > 2000) {
+    temperatureCheckedMs = frameMs;
+    const auto milli = juce::File("/sys/class/thermal/thermal_zone0/temp").loadFileAsString().trim();
+    cpuTemperature = milli.isEmpty() ? juce::String()
+                                     : juce::String(juce::roundToInt(milli.getIntValue() / 1000.0)) +
+                                           juce::String::fromUTF8(" \xc2\xb0" "C");
+  }
+  const juce::String cpuLoad = "CPU " + juce::String(juce::roundToInt(static_cast<double>(levels["cpu"]) * 100.0)) +
+                               " %" + (cpuTemperature.isEmpty() ? juce::String() : "  " + cpuTemperature);
   const bool tunerOn = state.tunerOn.load();
   const int buttonTop = titleTop + (titleH - buttonSize) / 2;
   const juce::Rectangle<int> settingsBox(w - 2 - buttonSize, buttonTop, buttonSize, buttonSize);
@@ -469,7 +480,7 @@ void DisplayUi::drawMain(juce::Graphics& g) {
                 juce::String(dev->getCurrentBufferSizeSamples());
       const juce::String info[] = {
           "Network  " + address,
-          "CPU " + juce::String(juce::roundToInt(static_cast<double>(levels["cpu"]) * 100.0)) + " %   " +
+          cpuLoad + "   " +
               juce::String(xruns) + " dropouts   " + audio,
           juce::String::fromUTF8("v" T3K_HOST_VERSION "  \xc2\xb7  plugin " T3K_PLUGIN_REF),
       };
@@ -614,8 +625,7 @@ void DisplayUi::drawMain(juce::Graphics& g) {
             break;
           case HeadItem::Tuner: context = tunerOn ? tunerText : juce::String("Tuner"); break;
           case HeadItem::Settings:
-            context = "Settings   CPU " + juce::String(juce::roundToInt(static_cast<double>(levels["cpu"]) * 100.0)) +
-                      " %   " + juce::String(xruns) + " dropouts";
+            context = "Settings   " + cpuLoad + "   " + juce::String(xruns) + " dropouts";
             break;
           case HeadItem::Preset: {
             const int index = state.presetIndex.load();
