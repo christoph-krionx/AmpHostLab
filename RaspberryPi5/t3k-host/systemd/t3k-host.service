@@ -1,0 +1,20 @@
+# Starts t3k-host at boot with the settings in ~/.config/t3k-host/t3k-host.conf.
+# Install: see "Start on boot" in README.md.
+
+[Unit]
+Description=t3k-host (TONE3000 processor)
+After=sound.target local-fs.target
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/home/pi/t3k-host/build/t3k-host_artefacts/Release/t3k-host
+Restart=on-failure
+RestartSec=3
+# Realtime audio thread and locked memory, as /etc/security/limits.d does for
+# a login shell (services don't read that file).
+LimitRTPRIO=95
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

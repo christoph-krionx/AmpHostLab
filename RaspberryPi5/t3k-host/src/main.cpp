@@ -13,6 +13,7 @@
 #include <sys/mman.h>
 
 #include "ChainWatcher.h"
+#include "HostConfig.h"
 #include "Processor.h"
 #include "display/DisplayUi.h"
 #include "input/EncoderUi.h"
@@ -27,6 +28,7 @@ void onSignal(int) {
 
 struct Options {
   juce::String device;  // substring of the ALSA device name
+  int deviceWait{30};   // seconds to wait for the device to appear
   double sampleRate{48000.0};  // the chain is anchored at 48 kHz
   int blockSize{64};
   juce::String tone;    // .nam / .wav file or a folder of them
@@ -38,14 +40,24 @@ struct Options {
   int lcdSpeed{16000000};
   juce::String encoder;   // "a,b,sw" BCM GPIO numbers, empty = no encoder
   juce::StringArray sets;  // "paramId=value", in the parameter's own units
+  juce::String config;  // start settings file; empty = the default one
+  bool noConfig{false};
+  bool version{false};
   bool listDevices{false};
   bool listParams{false};
+  juce::String preview;  // write the screen to this PNG instead of running
+  int previewCursor{-1};
+  bool previewEdit{false};
 };
 
 void printUsage() {
   std::cout << "Usage: t3k-host [options]\n"
+               "  --config <file>       start settings (default ~/.config/t3k-host/t3k-host.conf)\n"
+               "  --no-config           ignore the settings file\n"
+               "  --version             print the version and exit\n"
                "  --list-devices        list ALSA devices and exit\n"
                "  --device <text>       ALSA device whose name contains <text>\n"
+               "  --device-wait <s>     wait this long for the device to appear (default 30)\n"
                "  --rate <hz>           sample rate (default 48000)\n"
                "  --block <frames>      buffer size (default 64)\n"
                "  --tone <path>         load a local A2 .nam / IR .wav file or folder\n"
@@ -54,6 +66,9 @@ void printUsage() {
                "  --status <seconds>    CPU/xrun report interval, 0 = off (default 5)\n"
                "  --set <id>=<value>    set a parameter, repeatable (e.g. pitchSemitones=-2)\n"
                "  --list-params         list parameter ids with range and value, then exit\n"
+               "  --preview <png>       draw the screen into a PNG (320x240) and exit, no audio\n"
+               "  --preview-cursor <n>  cursor position in the preview (default: no cursor)\n"
+               "  --preview-edit        show the cursor in edit mode\n"
                "  --encoder <a,b,sw>    front-panel encoder on these GPIOs (e.g. 5,6,26)\n"
                "  --lcd <panel>        SPI display: none | ili9341 | st7789 (default none)\n"
                "  --lcd-rotation <0..3> quarter turns (default 1, landscape)\n"
@@ -65,7 +80,11 @@ bool parseArgs(const juce::StringArray& args, Options& o) {
     const auto& a = args[i];
     const auto value = [&]() -> juce::String { return i + 1 < args.size() ? args[++i] : juce::String(); };
     if (a == "--list-devices") o.listDevices = true;
+    else if (a == "--config") o.config = value();
+    else if (a == "--no-config") o.noConfig = true;
+    else if (a == "--version") o.version = true;
     else if (a == "--device") o.device = value();
+    else if (a == "--device-wait") o.deviceWait = value().getIntValue();
     else if (a == "--rate") o.sampleRate = value().getDoubleValue();
     else if (a == "--block") o.blockSize = value().getIntValue();
     else if (a == "--tone") o.tone = value();
@@ -74,6 +93,9 @@ bool parseArgs(const juce::StringArray& args, Options& o) {
     else if (a == "--status") o.statusSeconds = value().getIntValue();
     else if (a == "--set") o.sets.add(value());
     else if (a == "--list-params") o.listParams = true;
+    else if (a == "--preview") o.preview = value();
+    else if (a == "--preview-cursor") o.previewCursor = value().getIntValue();
+    else if (a == "--preview-edit") o.previewEdit = true;
     else if (a == "--encoder") o.encoder = value();
     else if (a == "--lcd") o.lcd = value();
     else if (a == "--lcd-rotation") o.lcdRotation = value().getIntValue();
@@ -125,11 +147,41 @@ private:
 }  // namespace
 
 int main(int argc, char** argv) {
-  Options opt;
-  if (!parseArgs(juce::StringArray(argv + 1, argc - 1), opt)) {
+  // The settings file first, then the command line on top of it.
+  const juce::StringArray cliArgs(argv + 1, argc - 1);
+  Options cli;
+  if (!parseArgs(cliArgs, cli)) {
     printUsage();
     return 2;
   }
+  if (cli.version) {
+    std::cout << "t3k-host " << T3K_HOST_VERSION << " (plugin " << T3K_PLUGIN_REF << ")" << std::endl;
+    return 0;
+  }
+  const juce::File configFile =
+      cli.noConfig ? juce::File()
+                   : cli.config.isNotEmpty() ? juce::File::getCurrentWorkingDirectory().getChildFile(cli.config)
+                                             : t3k::HostConfig::defaultFile();
+  Options opt;
+  if (configFile.existsAsFile()) {
+    juce::StringArray configArgs;
+    juce::String configError;
+    if (!t3k::HostConfig::read(configFile, configArgs, configError) || !parseArgs(configArgs, opt)) {
+      std::cerr << "Bad settings file " << configFile.getFullPathName() << ": "
+                << (configError.isNotEmpty() ? configError : juce::String("unknown key")) << std::endl;
+      return 2;
+    }
+    std::cout << "Settings: " << configFile.getFullPathName() << std::endl;
+  } else if (cli.config.isNotEmpty()) {
+    std::cerr << "Settings file not found: " << configFile.getFullPathName() << std::endl;
+    return 2;
+  }
+  // A tone or preset on the command line replaces the file's sound.
+  if (cliArgs.contains("--tone") || cliArgs.contains("--preset")) {
+    opt.tone.clear();
+    opt.preset.clear();
+  }
+  parseArgs(cliArgs, opt);
 
   juce::ScopedJuceInitialiser_GUI juceInit;
 
@@ -173,6 +225,51 @@ int main(int argc, char** argv) {
     std::cout << "Set " << id << " = " << param->convertFrom0to1(param->getValue()) << std::endl;
   }
 
+  // Preview: draw the screen into a PNG, without audio device or panel.
+  if (opt.preview.isNotEmpty()) {
+    processor.setPlayConfigDetails(2, 2, opt.sampleRate, opt.blockSize);
+    processor.prepareToPlay(opt.sampleRate, opt.blockSize);
+    t3k::UiState previewState;
+    t3k::DisplayUi previewUi(processor, deviceManager, previewState);
+    if (opt.tone.isNotEmpty()) {
+      const auto file = juce::File::getCurrentWorkingDirectory().getChildFile(opt.tone);
+      processor.loadLocalTonePath(file);
+      previewUi.setTitle(file.getFileNameWithoutExtension());
+    }
+    if (opt.preset.isNotEmpty()) {
+      const auto list = processor.getPresetList();
+      if (const auto* presets = list["presets"].getArray())
+        for (const auto& p : *presets)
+          if (p["name"].toString().equalsIgnoreCase(opt.preset))
+            processor.loadPreset(p["id"].toString());
+      previewUi.setTitle(opt.preset);
+    }
+    previewState.active = opt.previewCursor >= 0;
+    previewState.selected = juce::jmax(0, opt.previewCursor);
+    previewState.editing = opt.previewEdit;
+    t3k::ChainWatcher previewWatcher(processor, previewState);
+    // Give the models a moment to load before drawing.
+    juce::Timer::callAfterDelay(3000, [&] {
+      const auto frame = previewUi.renderPreview(320, 240);
+      const juce::File out = juce::File::getCurrentWorkingDirectory().getChildFile(opt.preview);
+      out.deleteFile();
+      juce::FileOutputStream stream(out);
+      juce::PNGImageFormat png;
+      if (stream.openedOk() && png.writeImageToStream(frame, stream))
+        std::cout << "Preview written: " << out.getFullPathName() << std::endl;
+      else
+        std::cerr << "Preview not written: " << out.getFullPathName() << std::endl;
+      juce::MessageManager::getInstance()->stopDispatchLoop();
+    });
+    juce::MessageManager::getInstance()->runDispatchLoop();
+    processor.releaseResources();
+    return 0;
+  }
+
+  // Early, so a stop while waiting for the device still ends cleanly.
+  std::signal(SIGINT, onSignal);
+  std::signal(SIGTERM, onSignal);
+
   // The display comes up first so the splash covers device and tone setup.
   t3k::UiState uiState;
   std::unique_ptr<t3k::DisplayUi> display;
@@ -189,13 +286,36 @@ int main(int argc, char** argv) {
     }
   }
 
+  // On boot a USB interface can show up after the host has started.
   juce::AudioDeviceManager::AudioDeviceSetup setup;
-  setup.inputDeviceName = findDevice(alsa->getDeviceNames(true), opt.device);
-  setup.outputDeviceName = findDevice(alsa->getDeviceNames(false), opt.device);
-  if (setup.inputDeviceName.isEmpty() || setup.outputDeviceName.isEmpty()) {
-    std::cerr << "No ALSA device matching \"" << opt.device << "\" (try --list-devices)" << std::endl;
-    return 1;
+  const auto waitUntilMs =
+      juce::Time::getMillisecondCounter() + static_cast<juce::uint32>(juce::jmax(0, opt.deviceWait)) * 1000;
+  for (bool announced = false;;) {
+    setup.inputDeviceName = findDevice(alsa->getDeviceNames(true), opt.device);
+    setup.outputDeviceName = findDevice(alsa->getDeviceNames(false), opt.device);
+    if (setup.inputDeviceName.isNotEmpty() && setup.outputDeviceName.isNotEmpty())
+      break;
+    if (quitRequested)
+      return 0;
+    if (juce::Time::getMillisecondCounter() >= waitUntilMs) {
+      std::cerr << "No ALSA device matching \"" << opt.device << "\" (try --list-devices)" << std::endl;
+      if (display != nullptr) {
+        display->setStatus("No audio interface \"" + opt.device + "\"");
+        juce::Thread::sleep(3000);  // long enough to read before the restart
+      }
+      return 1;
+    }
+    if (!announced) {
+      std::cout << "Waiting for an ALSA device matching \"" << opt.device << "\"" << std::endl;
+      if (display != nullptr)
+        display->setStatus("Waiting for " + opt.device);
+      announced = true;
+    }
+    juce::Thread::sleep(500);
+    alsa->scanForDevices();
   }
+  if (display != nullptr)
+    display->setStatus("starting");
   setup.sampleRate = opt.sampleRate;
   setup.bufferSize = opt.blockSize;
   setup.useDefaultInputChannels = false;
@@ -228,7 +348,27 @@ int main(int argc, char** argv) {
               << "Reported round trip: " << juce::String(1000.0 * latency / rate, 2) << " ms" << std::endl;
   }
 
-  if (opt.tone.isNotEmpty()) {
+  // A preset wins; the tone is the fallback when there is none (or it is gone).
+  bool presetLoaded = false;
+  if (opt.preset.isNotEmpty()) {
+    const auto list = processor.getPresetList();
+    juce::String id;
+    if (const auto* presets = list["presets"].getArray())
+      for (const auto& p : *presets)
+        if (p["name"].toString().equalsIgnoreCase(opt.preset))
+          id = p["id"].toString();
+    presetLoaded = id.isNotEmpty() && processor.loadPreset(id);
+    if (presetLoaded) {
+      std::cout << "Preset loaded: " << opt.preset << std::endl;
+      if (display != nullptr)
+        display->setTitle(opt.preset);
+    } else {
+      std::cerr << "Preset not loaded: " << opt.preset << std::endl;
+      opt.preset.clear();
+    }
+  }
+
+  if (!presetLoaded && opt.tone.isNotEmpty()) {
     const auto file = juce::File::getCurrentWorkingDirectory().getChildFile(opt.tone);
     const auto result = processor.loadLocalTonePath(file);
     if (result.hasProperty("error"))
@@ -239,21 +379,6 @@ int main(int argc, char** argv) {
       display->setTitle(file.getFileNameWithoutExtension());
   }
 
-  if (opt.preset.isNotEmpty()) {
-    const auto list = processor.getPresetList();
-    juce::String id;
-    if (const auto* presets = list["presets"].getArray())
-      for (const auto& p : *presets)
-        if (p["name"].toString().equalsIgnoreCase(opt.preset))
-          id = p["id"].toString();
-    if (id.isEmpty() || !processor.loadPreset(id))
-      std::cerr << "Preset not loaded: " << opt.preset << std::endl;
-    else
-      std::cout << "Preset loaded: " << opt.preset << std::endl;
-    if (display != nullptr)
-      display->setTitle(opt.preset);
-  }
-
   t3k::ChainWatcher chainWatcher(processor, uiState);
 
   std::unique_ptr<t3k::EncoderUi> encoder;
@@ -261,6 +386,12 @@ int main(int argc, char** argv) {
     const auto pins = juce::StringArray::fromTokens(opt.encoder, ",", "");
     encoder = std::make_unique<t3k::EncoderUi>(processor, uiState, display.get());
     encoder->setCurrentPreset(opt.preset);
+    // The preset turned to last comes back on the next start.
+    if (configFile.existsAsFile())
+      encoder->onPresetLoaded = [configFile](const juce::String& name) {
+        if (!t3k::HostConfig::rememberPreset(configFile, name))
+          std::cerr << "Could not write " << configFile.getFullPathName() << std::endl;
+      };
     const auto encoderError =
         pins.size() == 3 ? encoder->start({pins[0].getIntValue(), pins[1].getIntValue(), pins[2].getIntValue()})
                          : juce::String("expected --encoder a,b,sw");
@@ -272,9 +403,6 @@ int main(int argc, char** argv) {
 
   if (display != nullptr)
     display->showMain();
-
-  std::signal(SIGINT, onSignal);
-  std::signal(SIGTERM, onSignal);
 
   {
     Monitor monitor(deviceManager, opt.statusSeconds);

@@ -10,6 +10,7 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include <functional>
 #include <vector>
 
 #include "EncoderReader.h"
@@ -31,6 +32,9 @@ public:
 
   /** Returns an error message, empty on success. */
   juce::String start(const EncoderPins& pins);
+
+  /** Called on the message thread with the name of each preset loaded. */
+  std::function<void(const juce::String&)> onPresetLoaded;
 
 private:
   struct Preset {

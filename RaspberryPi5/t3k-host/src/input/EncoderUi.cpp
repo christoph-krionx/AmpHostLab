@@ -191,9 +191,11 @@ void EncoderUi::loadPendingPreset() {
   if (!juce::isPositiveAndBelow(presetIndex, static_cast<int>(presets.size())))
     return;
   const auto& preset = presets[static_cast<size_t>(presetIndex)];
-  if (processor.loadPreset(preset.id))
+  if (processor.loadPreset(preset.id)) {
     std::cout << "Preset loaded: " << preset.name << std::endl;
-  else
+    if (onPresetLoaded)
+      onPresetLoaded(preset.name);
+  } else
     std::cerr << "Preset not loaded: " << preset.name << std::endl;
 }
 

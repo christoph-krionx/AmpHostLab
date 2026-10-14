@@ -26,7 +26,11 @@ t3k-host --device Scarlett --block 64 --tone ~/tones/my-amp.nam
 
 | Option | Meaning |
 | --- | --- |
+| `--config <file>` | Start settings, default `~/.config/t3k-host/t3k-host.conf` (see below) |
+| `--no-config` | Ignore the settings file |
+| `--version` | Print the host version and the plugin commit, then exit |
 | `--device <text>` | ALSA device whose name contains `<text>` |
+| `--device-wait <s>` | Wait this long for the device to appear, default 30 |
 | `--rate <hz>` | Sample rate, default 48000 (the plugin's chain runs at 48 kHz) |
 | `--block <frames>` | Buffer size, default 64 |
 | `--tone <path>` | Local `.nam` (A2 only), IR `.wav`, or a folder of them |
@@ -39,6 +43,32 @@ t3k-host --device Scarlett --block 64 --tone ~/tones/my-amp.nam
 | `--lcd-rotation <0..3>` | Quarter turns, default 1 (landscape) |
 | `--lcd-speed <hz>` | SPI clock, default 16000000 |
 | `--encoder <a,b,sw>` | Front-panel encoder on these BCM GPIOs, e.g. `5,6,26` |
+| `--preview <png>` | Draw the main screen into a 320x240 PNG and exit, no audio |
+| `--preview-cursor <n>` / `--preview-edit` | Cursor position and edit mode in the preview |
+
+### Settings file
+
+Without a command line the host takes its start settings from `~/.config/t3k-host/t3k-host.conf`: one `key = value` per line, the keys are the option names without `--`, `#` starts a comment and a leading `~/` means the home directory. Options on the command line win; a `--tone` or `--preset` there replaces the file's sound. [`t3k-host.conf.example`](t3k-host.conf.example) is a starting point:
+
+```bash
+mkdir -p ~/.config/t3k-host && cp t3k-host.conf.example ~/.config/t3k-host/t3k-host.conf
+```
+
+A preset in the file wins over the tone, which is the fallback when the preset is missing. Whenever another preset is loaded on the device, the host rewrites the `preset` line, so the next start comes up with the same sound.
+
+### Start on boot
+
+[`systemd/t3k-host.service`](systemd/t3k-host.service) starts the host as user `pi` with the settings file, restarts it if it fails, and sets the realtime and memory-lock limits itself:
+
+```bash
+sudo cp systemd/t3k-host.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now t3k-host
+```
+
+`journalctl -u t3k-host -f` shows its output. While the service runs, the audio interface and the display are taken: `sudo systemctl stop t3k-host` before starting the host by hand.
+
+During start the splash screen shows the version and what the host is waiting for (for example a USB interface that comes up late) for at least three seconds.
 
 ## Display
 

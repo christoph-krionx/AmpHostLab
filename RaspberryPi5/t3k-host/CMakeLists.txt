@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.22)
 # Compiles the processor sources straight from a tone3000-plugin checkout
 # (same recipe as the plugin's own test/CMakeLists.txt, HEADLESS=1) and
 # drives it from an ALSA device. No editor, no plugin format, no window.
-project(t3k-host VERSION 0.1.0 LANGUAGES C CXX)
+project(t3k-host VERSION 0.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -130,6 +130,22 @@ target_link_libraries(t3k-host
 )
 
 add_dependencies(t3k-host NAM)
+
+# Version for --version and the splash screen, with the plugin commit the
+# host was built against. Only on the two files that show it, so a version
+# change does not rebuild the plugin sources.
+execute_process(
+    COMMAND git -C "${T3K_PLUGIN_DIR}" rev-parse --short HEAD
+    OUTPUT_VARIABLE T3K_PLUGIN_REF
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if (NOT T3K_PLUGIN_REF)
+    set(T3K_PLUGIN_REF "unknown")
+endif()
+set_source_files_properties(src/main.cpp src/display/DisplayUi.cpp PROPERTIES COMPILE_DEFINITIONS
+    "T3K_HOST_VERSION=\"${PROJECT_VERSION}\";T3K_PLUGIN_REF=\"${T3K_PLUGIN_REF}\""
+)
 
 # Display wiring/panel check; plain C++, no JUCE.
 add_executable(lcd-test tools/lcd-test.cpp src/display/SpiLcd.cpp)

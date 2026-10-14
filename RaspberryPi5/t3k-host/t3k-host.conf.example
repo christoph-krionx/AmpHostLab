@@ -1,0 +1,21 @@
+# t3k-host start settings. Copy to ~/.config/t3k-host/t3k-host.conf.
+# One "key = value" per line; the keys are the command-line options without
+# "--" (see t3k-host --help). Options given on the command line win.
+
+# Audio
+device = Scarlett
+device-wait = 30
+block = 32
+input-mode = left
+
+# Front panel
+lcd = ili9341
+encoder = 5,6,26
+
+# Sound at start: a preset, or a local tone when no preset is set.
+# The host updates the preset line whenever another preset is loaded.
+tone = ~/tones/Boosted-6505+-A2-Chugs-FullRig.nam
+preset =
+
+# CPU/xrun report in the log every n seconds, 0 = off
+status = 0

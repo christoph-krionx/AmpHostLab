@@ -9,7 +9,7 @@ namespace t3k {
 namespace {
 
 constexpr int kFrameMs = 50;
-constexpr int kMinSplashMs = 1500;
+constexpr int kMinSplashMs = 3000;
 // How often the panel's settings and the whole picture are sent again, so
 // a transfer glitch never stays on screen for long.
 constexpr int kRefreshMs = 2000;
@@ -87,15 +87,32 @@ DisplayUi::~DisplayUi() {
 juce::String DisplayUi::start(const LcdConfig& config) {
   if (!lcd.open(config))
     return lcd.error();
+  frameW = lcd.width();
+  frameH = lcd.height();
   shown.assign(static_cast<size_t>(lcd.width()) * static_cast<size_t>(lcd.height()), 0);
   pending = shown;
   startThread(juce::Thread::Priority::low);
   return {};
 }
 
+juce::Image DisplayUi::renderPreview(int width, int height) {
+  frameW = width;
+  frameH = height;
+  juce::Image frame(juce::Image::RGB, width, height, true, juce::SoftwareImageType());
+  juce::Graphics g(frame);
+  g.fillAll(kBackground);
+  drawMain(g);
+  return frame;
+}
+
 void DisplayUi::setTitle(const juce::String& text) {
   const juce::ScopedLock lock(titleLock);
   title = text;
+}
+
+void DisplayUi::setStatus(const juce::String& text) {
+  const juce::ScopedLock lock(titleLock);
+  status = text;
 }
 
 void DisplayUi::run() {
@@ -129,18 +146,26 @@ void DisplayUi::run() {
 }
 
 void DisplayUi::drawSplash(juce::Graphics& g) const {
-  const auto area = juce::Rectangle<int>(lcd.width(), lcd.height());
+  const auto area = juce::Rectangle<int>(frameW, frameH);
   g.setColour(kAccent);
   g.setFont(font(46.0f, true));
   g.drawText("AMPHOST", area.withTrimmedBottom(40), juce::Justification::centred);
+  juce::String line;
+  {
+    const juce::ScopedLock lock(titleLock);
+    line = status;
+  }
   g.setColour(kDim);
   g.setFont(font(16.0f));
-  g.drawText("starting", area.withTrimmedTop(area.getHeight() / 2 + 20), juce::Justification::centredTop);
+  g.drawText(line, area.withTrimmedTop(area.getHeight() / 2 + 20), juce::Justification::centredTop);
+  g.setFont(font(12.0f));
+  g.drawText(juce::String::fromUTF8("v" T3K_HOST_VERSION "  \xc2\xb7  plugin " T3K_PLUGIN_REF), area.withTrimmedBottom(6),
+             juce::Justification::centredBottom);
 }
 
 void DisplayUi::drawMain(juce::Graphics& g) {
-  const int w = lcd.width();
-  const int h = lcd.height();
+  const int w = frameW;
+  const int h = frameH;
   const auto levels = processor.getMeterLevels();
 
   // Cursor: white frame on the selected item, blue once it is being edited.
