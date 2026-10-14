@@ -39,8 +39,17 @@ private:
         if (!cell.insert) {
           cell.name = item["tone"]["title"].toString();
           cell.gear = gearOf(item["tone"]);
-          cell.enabled = static_cast<bool>(item["params"]["enabled"]);
+          const auto params = item["params"];
+          cell.enabled = static_cast<bool>(params["enabled"]);
+          cell.normalize = static_cast<bool>(params["normalize"]);
+          cell.inputGain = static_cast<float>(static_cast<double>(params["inputGain"]));
+          cell.outputGain = static_cast<float>(static_cast<double>(params["outputGain"]));
+          cell.mix = static_cast<float>(static_cast<double>(params["mix"]));
           cell.loading = static_cast<bool>(item["modelLoading"]) || !static_cast<bool>(item["loaded"]);
+          cell.activeModel = static_cast<int>(item["activeModelId"]);
+          if (const auto* models = item["tone"]["models"].getArray())
+            for (const auto& m : *models)
+              cell.models.push_back({static_cast<int>(m["id"]), m["name"].toString(), m["model_url"].toString()});
         }
         cells.push_back(std::move(cell));
       }
@@ -94,12 +103,20 @@ private:
     for (const auto& row : view.rows)
       for (const auto& cell : row)
         if (!cell.insert)
-          chainPrint << cell.name << (cell.enabled ? "+" : "-");
+          chainPrint << cell.name << (cell.enabled ? "+" : "-") << (cell.normalize ? "n" : "")
+                     << juce::String(cell.inputGain, 4) << "/" << juce::String(cell.outputGain, 4) << "/"
+                     << juce::String(cell.mix, 4) << "#" << cell.activeModel;
 
-    // On the overview the blocks sit in the middle of the cursor order:
-    // when their number changes, keep the cursor on the knob it was on,
-    // and move it off a block that is gone.
-    if (state.currentPage() == Page::Overview) {
+    // A block page (or a move) whose block is gone ends on the overview.
+    // There the blocks sit in the middle of the cursor order: when their
+    // number changes, keep the cursor on the knob it was on, and move it
+    // off a block that is gone.
+    if ((state.currentPage() == Page::Block || state.moving.load()) && view.find(state.getPageBlock()) == nullptr) {
+      state.page = static_cast<int>(Page::Overview);
+      state.moving = false;
+      state.editing = false;
+      state.selected = 0;
+    } else if (state.currentPage() == Page::Overview) {
       const int firstBlock = kHeadItems + kSwitches;
       const int oldBlocks = static_cast<int>(state.getChain().tones().size());
       const int newBlocks = static_cast<int>(view.tones().size());

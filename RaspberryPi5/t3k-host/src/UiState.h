@@ -6,42 +6,13 @@
 #include <juce_core/juce_core.h>
 
 #include <atomic>
+#include <functional>
 #include <string>
-#include <vector>
 
+#include "ui/ChainView.h"
 #include "ui/PanelModel.h"
 
 namespace t3k {
-
-// One slot of the chain grid.
-struct ChainCell {
-  std::string id;
-  juce::String name;
-  juce::String gear;    // the plugin's gear id (amp, cab, pedal, ...), picks the pictogram
-  bool insert{false};   // empty slot
-  bool enabled{true};
-  bool loading{false};
-};
-
-// The chain as the plugin's grid shows it: one row in mono, two in stereo
-// (left and right chain), each at least five slots wide.
-struct ChainView {
-  std::vector<ChainCell> rows[2];
-  // Column each row starts in. A branched chain's branch row starts one
-  // column after the trunk block it taps, like in the plugin.
-  int offset[2]{0, 0};
-  bool stereo{false};
-
-  /** Tone blocks in cursor order: first row left to right, then the second. */
-  std::vector<const ChainCell*> tones() const {
-    std::vector<const ChainCell*> out;
-    for (const auto& row : rows)
-      for (const auto& cell : row)
-        if (!cell.insert)
-          out.push_back(&cell);
-    return out;
-  }
-};
 
 struct UiState {
   std::atomic<bool> active{false};  // false = no encoder, draw no cursor
@@ -53,6 +24,13 @@ struct UiState {
   std::atomic<bool> knobsInPath{true};
   // Value encoders in fine mode, one bit per knob slot.
   std::atomic<int> fineSlots{0};
+  // The block page's block is being moved through its row on the grid.
+  std::atomic<bool> moving{false};
+  // The block page's remove asked for confirmation; the next press removes.
+  std::atomic<bool> removeArmed{false};
+  // Model picked while editing the block page's model entry, applied when
+  // editing ends; -1 = none.
+  std::atomic<int> pendingModel{-1};
   // Position in the preset list, for the display's context line.
   std::atomic<int> presetIndex{-1};
   std::atomic<int> presetCount{0};
@@ -74,10 +52,28 @@ struct UiState {
     const juce::ScopedLock lock(chainLock);
     chain = std::move(view);
   }
+  /** Changes one block in place, so the screen shows a new value before
+      the processor's next chain state confirms it. */
+  void updateCell(const std::string& blockId, const std::function<void(ChainCell&)>& change) {
+    const juce::ScopedLock lock(chainLock);
+    if (auto* cell = chain.find(blockId))
+      change(*cell);
+  }
+
+  /** The block the block page (or a move) is about. */
+  std::string getPageBlock() const {
+    const juce::ScopedLock lock(chainLock);
+    return pageBlock;
+  }
+  void setPageBlock(const std::string& blockId) {
+    const juce::ScopedLock lock(chainLock);
+    pageBlock = blockId;
+  }
 
 private:
-  juce::CriticalSection chainLock;
+  juce::CriticalSection chainLock;  // guards chain and pageBlock
   ChainView chain;
+  std::string pageBlock;
 };
 
 }  // namespace t3k

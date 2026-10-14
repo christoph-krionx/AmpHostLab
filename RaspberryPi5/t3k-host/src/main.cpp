@@ -71,7 +71,7 @@ void printUsage() {
                "  --preview <png>       draw the screen into a PNG (320x240) and exit, no audio\n"
                "  --preview-cursor <n>  cursor position in the preview (default: no cursor)\n"
                "  --preview-edit        show the cursor in edit mode\n"
-               "  --preview-page <name> page in the preview: overview | gate | pitch | spread\n"
+               "  --preview-page <name> page in the preview: overview | gate | pitch | spread | block\n"
                "  --encoder <a,b,sw>    front-panel encoder on these GPIOs (e.g. 5,6,26)\n"
                "  --lcd <panel>        SPI display: none | ili9341 | st7789 (default none)\n"
                "  --lcd-rotation <0..3> quarter turns (default 1, landscape)\n"
@@ -248,14 +248,18 @@ int main(int argc, char** argv) {
             processor.loadPreset(p["id"].toString());
       previewUi.setTitle(opt.preset);
     }
-    const juce::StringArray pageNames{"overview", "gate", "pitch", "spread"};
-    previewState.page = juce::jmax(0, pageNames.indexOf(opt.previewPage, true));
-    previewState.active = opt.previewCursor >= 0;
-    previewState.selected = juce::jmax(0, opt.previewCursor);
-    previewState.editing = opt.previewEdit;
     t3k::ChainWatcher previewWatcher(processor, previewState);
-    // Give the models a moment to load before drawing.
+    // Give the models a moment to load before drawing; the page and cursor
+    // are set once the chain is there (the block page shows the first block).
     juce::Timer::callAfterDelay(3000, [&] {
+      const auto previewChain = previewState.getChain();
+      if (const auto tones = previewChain.tones(); !tones.empty())
+        previewState.setPageBlock(tones.front()->id);
+      const juce::StringArray pageNames{"overview", "gate", "pitch", "spread", "block"};
+      previewState.page = juce::jmax(0, pageNames.indexOf(opt.previewPage, true));
+      previewState.active = opt.previewCursor >= 0;
+      previewState.selected = juce::jmax(0, opt.previewCursor);
+      previewState.editing = opt.previewEdit;
       const auto frame = previewUi.renderPreview(320, 240);
       const juce::File out = juce::File::getCurrentWorkingDirectory().getChildFile(opt.preview);
       out.deleteFile();

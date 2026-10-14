@@ -1,5 +1,6 @@
 #include "PanelUi.h"
 
+#include <algorithm>
 #include <iostream>
 
 #include "Processor.h"
@@ -9,11 +10,40 @@ namespace t3k {
 
 namespace {
 
-// Stepping through presets loads only once the encoder has come to rest.
+// Stepping through presets or models loads only once the encoder has come
+// to rest: each load is a whole model in the background.
 constexpr int kPresetLoadDelayMs = 350;
 // Knob steps without a unit step of their own: 1 % of the range, 0.1 % fine.
 constexpr float kKnobStep = 0.01f;
 constexpr float kFineDivider = 10.0f;
+// Where the blocks start in the overview's cursor order.
+constexpr int kFirstBlock = kHeadItems + kSwitches;
+
+// A lane of the processor's chain state as block ids, inserts included.
+std::vector<std::string> laneOrder(const juce::var& lane) {
+  std::vector<std::string> order;
+  if (const auto* items = lane.getArray())
+    for (const auto& item : *items)
+      order.push_back(item["blockId"].toString().toStdString());
+  return order;
+}
+
+// The block's position among the tone blocks as the processor has them
+// right now (the panel's copy of the chain can be a poll behind).
+int freshToneIndex(TONE3000Processor& processor, const std::string& blockId) {
+  const auto chain = processor.getChainState(-1);
+  int index = 0;
+  for (const char* key : {"chain", "chainRight"})
+    if (const auto* items = chain[key].getArray())
+      for (const auto& item : *items) {
+        if (item["kind"].toString() == "insert")
+          continue;
+        if (item["blockId"].toString().toStdString() == blockId)
+          return index;
+        ++index;
+      }
+  return -1;
+}
 
 }  // namespace
 
@@ -66,12 +96,27 @@ void PanelUi::handle(const InputEvent& event) {
 }
 
 void PanelUi::handleNav(const InputEvent& event) {
+  // A block on the move follows the turns until a press puts it down.
+  if (state.moving.load()) {
+    if (event.kind == InputEvent::Kind::Turn)
+      moveBlock(event.delta);
+    else
+      endMove();
+    return;
+  }
+
   const auto list = targets();
   if (list.empty())
     return;
   const int selected = juce::jlimit(0, static_cast<int>(list.size()) - 1, state.selected.load());
   const auto target = list[static_cast<size_t>(selected)];
   const bool editing = state.editing.load();
+
+  // An armed remove only survives the press that confirms it.
+  const bool onRemove = target.kind == TargetKind::Entry && state.currentPage() == Page::Block &&
+                        pageDef(Page::Block).entries[static_cast<size_t>(target.index)].kind == EntryKind::BlockRemove;
+  if (!(event.kind == InputEvent::Kind::Press && onRemove))
+    state.removeArmed = false;
 
   switch (event.kind) {
     case InputEvent::Kind::Turn:
@@ -84,15 +129,10 @@ void PanelUi::handleNav(const InputEvent& event) {
       }
       break;
     case InputEvent::Kind::Press:
-      if (editing) {
-        if (isTimerRunning())  // a preset is still waiting to load
-          loadPendingPreset();
-        if (target.kind == TargetKind::Head && target.index == static_cast<int>(HeadItem::Tuner))
-          state.tunerOn = false;
-        state.editing = false;
-      } else {
+      if (editing)
+        endEditing(target);
+      else
         press(target);
-      }
       break;
     case InputEvent::Kind::LongPress:
       if (editing) {
@@ -122,14 +162,48 @@ void PanelUi::press(const Target& target) {
     case TargetKind::Switch: toggle(pageDef(kSwitchPages[target.index]).enableParam); break;
     case TargetKind::Block: toggleBlock(target.index); break;
     case TargetKind::Entry: {
-      const char* id = def.entries[static_cast<size_t>(target.index)].paramId;
-      if (isChoice(id))
+      const auto& entry = def.entries[static_cast<size_t>(target.index)];
+      if (entry.kind != EntryKind::Param)
+        pressBlockEntry(entry.kind);
+      else if (isChoice(entry.paramId))
         state.editing = true;
       else
-        toggle(id);
+        toggle(entry.paramId);
       break;
     }
     case TargetKind::Knob: state.editing = true; break;
+  }
+}
+
+void PanelUi::pressBlockEntry(EntryKind kind) {
+  const auto chain = state.getChain();
+  const auto* cell = chain.find(state.getPageBlock());
+  if (cell == nullptr)
+    return;
+  switch (kind) {
+    case EntryKind::BlockOn: setBlockSwitch("enabled", !cell->enabled); break;
+    case EntryKind::BlockNormalize: setBlockSwitch("normalize", !cell->normalize); break;
+    case EntryKind::BlockModel: {
+      // Only a tone with several models of its own has something to pick.
+      if (cell->models.size() < 2)
+        break;
+      int index = 0;
+      for (size_t i = 0; i < cell->models.size(); ++i)
+        if (cell->models[i].id == cell->activeModel)
+          index = static_cast<int>(i);
+      state.pendingModel = index;
+      appliedModel = cell->activeModel;
+      state.editing = true;
+      break;
+    }
+    case EntryKind::BlockMove: startMove(); break;
+    case EntryKind::BlockRemove:
+      if (state.removeArmed.load())
+        removeBlock();
+      else
+        state.removeArmed = true;
+      break;
+    case EntryKind::Param: break;
   }
 }
 
@@ -140,6 +214,8 @@ void PanelUi::longPress(const Target& target) {
   }
   if (target.kind == TargetKind::Switch)
     openPage(kSwitchPages[target.index]);
+  else if (target.kind == TargetKind::Block)
+    openBlockPage(target.index);
 }
 
 void PanelUi::turnEditing(const Target& target, int delta, int step) {
@@ -149,14 +225,29 @@ void PanelUi::turnEditing(const Target& target, int delta, int step) {
         stepPreset(delta);
       break;
     case TargetKind::Entry: {
-      const char* id = pageDef(state.currentPage()).entries[static_cast<size_t>(target.index)].paramId;
-      stepChoice(id, delta);
+      const auto& entry = pageDef(state.currentPage()).entries[static_cast<size_t>(target.index)];
+      if (entry.kind == EntryKind::BlockModel)
+        stepModel(delta);
+      else
+        stepChoice(entry.paramId, delta);
       break;
     }
     case TargetKind::Knob: adjustKnob(target.index, delta, step, false); break;
     case TargetKind::Switch:
     case TargetKind::Block: break;
   }
+}
+
+void PanelUi::endEditing(const Target& target) {
+  if (isTimerRunning())  // a preset is still waiting to load
+    loadPendingPreset();
+  if (target.kind == TargetKind::Head && target.index == static_cast<int>(HeadItem::Tuner))
+    state.tunerOn = false;
+  if (state.pendingModel.load() >= 0) {
+    ++modelRequest;  // nothing scheduled loads after this
+    applyModel(true);
+  }
+  state.editing = false;
 }
 
 void PanelUi::openPage(Page page) {
@@ -167,10 +258,28 @@ void PanelUi::openPage(Page page) {
   state.selected = 1;  // the page's own on/off, right after save
 }
 
+void PanelUi::openBlockPage(int toneIndex) {
+  const auto chain = state.getChain();
+  const auto tones = chain.tones();
+  if (!juce::isPositiveAndBelow(toneIndex, static_cast<int>(tones.size())))
+    return;
+  state.setPageBlock(tones[static_cast<size_t>(toneIndex)]->id);
+  state.removeArmed = false;
+  openPage(Page::Block);
+}
+
 void PanelUi::closePage() {
   state.editing = false;
+  state.removeArmed = false;
+  int back = returnSelected;
+  // Back onto the block itself, wherever it stands now.
+  if (state.currentPage() == Page::Block) {
+    const int index = freshToneIndex(processor, state.getPageBlock());
+    if (index >= 0)
+      back = kFirstBlock + index;
+  }
   state.page = static_cast<int>(Page::Overview);
-  state.selected = returnSelected;
+  state.selected = back;
 }
 
 juce::RangedAudioParameter* PanelUi::param(const char* id) const {
@@ -200,10 +309,16 @@ void PanelUi::adjustKnob(int slot, int delta, int step, bool fine) {
   if (!juce::isPositiveAndBelow(slot, static_cast<int>(knobs.size())))
     return;
   const auto& knob = knobs[static_cast<size_t>(slot)];
+  const float move = static_cast<float>(delta * step) / (fine ? kFineDivider : 1.0f);
+  if (knob.blockParam) {
+    const auto chain = state.getChain();
+    if (const auto* cell = chain.find(state.getPageBlock()))
+      setBlockKnob(knob, blockValue(knob, *cell) + move * kKnobStep);
+    return;
+  }
   auto* p = param(knob.paramId);
   if (p == nullptr)
     return;
-  const float move = static_cast<float>(delta * step) / (fine ? kFineDivider : 1.0f);
   if (knob.unitStep > 0.0f) {
     const auto& range = p->getNormalisableRange();
     const float wanted = range.snapToLegalValue(realValue(*p) + move * knob.unitStep);
@@ -217,8 +332,24 @@ void PanelUi::resetKnob(int slot) {
   const auto& knobs = pageDef(state.currentPage()).knobs;
   if (!juce::isPositiveAndBelow(slot, static_cast<int>(knobs.size())))
     return;
-  if (auto* p = param(knobs[static_cast<size_t>(slot)].paramId))
+  const auto& knob = knobs[static_cast<size_t>(slot)];
+  if (knob.blockParam)
+    setBlockKnob(knob, knob.blockDefault);
+  else if (auto* p = param(knob.paramId))
     p->setValueNotifyingHost(p->getDefaultValue());
+}
+
+void PanelUi::setBlockKnob(const KnobDef& knob, float value) {
+  const auto id = state.getPageBlock();
+  const float n = juce::jlimit(0.0f, 1.0f, value);
+  if (!processor.setBlockParam(id, knob.paramId, n))
+    return;
+  // The processor reports a turned knob only once the turning has settled,
+  // so the screen takes the value straight away.
+  const juce::String name(knob.paramId);
+  state.updateCell(id, [&name, n](ChainCell& cell) {
+    (name == "inputGain" ? cell.inputGain : name == "outputGain" ? cell.outputGain : cell.mix) = n;
+  });
 }
 
 void PanelUi::toggleBlock(int toneIndex) {
@@ -228,6 +359,107 @@ void PanelUi::toggleBlock(int toneIndex) {
     return;
   const auto& cell = *tones[static_cast<size_t>(toneIndex)];
   processor.setBlockParam(cell.id, "enabled", cell.enabled ? 0.0 : 1.0);
+}
+
+void PanelUi::setBlockSwitch(const char* name, bool on) {
+  const auto id = state.getPageBlock();
+  if (!processor.setBlockParam(id, name, on ? 1.0 : 0.0))
+    return;
+  const juce::String which(name);
+  state.updateCell(id, [&which, on](ChainCell& cell) { (which == "enabled" ? cell.enabled : cell.normalize) = on; });
+}
+
+void PanelUi::stepModel(int delta) {
+  const auto chain = state.getChain();
+  const auto* cell = chain.find(state.getPageBlock());
+  if (cell == nullptr || cell->models.empty())
+    return;
+  state.pendingModel = juce::jlimit(0, static_cast<int>(cell->models.size()) - 1, state.pendingModel.load() + delta);
+  // The model follows the turning, once the encoder rests.
+  const int request = ++modelRequest;
+  juce::Timer::callAfterDelay(kPresetLoadDelayMs, [weak = juce::WeakReference<PanelUi>(this), request] {
+    if (auto* self = weak.get(); self != nullptr && request == self->modelRequest)
+      self->applyModel(false);
+  });
+}
+
+// Sends the picked model to the block, unless it is already there.
+// `finished`: editing ends, the pick is done.
+void PanelUi::applyModel(bool finished) {
+  const int index = finished ? state.pendingModel.exchange(-1) : state.pendingModel.load();
+  const auto id = state.getPageBlock();
+  const auto chain = state.getChain();
+  const auto* cell = chain.find(id);
+  if (cell == nullptr || !juce::isPositiveAndBelow(index, static_cast<int>(cell->models.size())))
+    return;
+  const auto& model = cell->models[static_cast<size_t>(index)];
+  if (model.id == appliedModel || model.url.isEmpty())
+    return;
+  appliedModel = model.id;
+  juce::DynamicObject::Ptr data = new juce::DynamicObject();
+  data->setProperty("id", model.id);
+  data->setProperty("name", model.name);
+  data->setProperty("model_url", model.url);
+  if (!processor.switchModel(id, model.id, juce::var(data.get())))
+    std::cerr << "Model not switched: " << model.name << std::endl;
+}
+
+void PanelUi::startMove() {
+  const int index = freshToneIndex(processor, state.getPageBlock());
+  if (index < 0)
+    return;
+  state.editing = false;
+  state.page = static_cast<int>(Page::Overview);
+  state.selected = kFirstBlock + index;
+  state.moving = true;
+}
+
+// One place per detent along the block's own row; empty slots count as
+// places, so a block can be put down with a gap before it.
+void PanelUi::moveBlock(int delta) {
+  const auto id = state.getPageBlock();
+  const auto chain = processor.getChainState(-1);
+  for (const char* key : {"chain", "chainRight"}) {
+    auto order = laneOrder(chain[key]);
+    const auto found = std::find(order.begin(), order.end(), id);
+    if (found == order.end())
+      continue;
+    int index = static_cast<int>(found - order.begin());
+    const int wanted = juce::jlimit(0, static_cast<int>(order.size()) - 1, index + delta);
+    if (wanted == index)
+      return;
+    while (index != wanted) {
+      const int next = index + (wanted > index ? 1 : -1);
+      std::swap(order[static_cast<size_t>(index)], order[static_cast<size_t>(next)]);
+      index = next;
+    }
+    processor.reorderChainBlocks(order);
+    return;
+  }
+}
+
+void PanelUi::endMove() {
+  state.moving = false;
+  const int index = freshToneIndex(processor, state.getPageBlock());
+  if (index >= 0)
+    state.selected = kFirstBlock + index;
+}
+
+void PanelUi::removeBlock() {
+  const auto id = state.getPageBlock();
+  state.removeArmed = false;
+  state.editing = false;
+  if (!processor.removeChainBlock(id))
+    std::cerr << "Block not removed" << std::endl;
+  // Onto the block that took its place, or the one before when it was last.
+  int tones = 0;
+  const auto chain = processor.getChainState(-1);
+  for (const char* key : {"chain", "chainRight"})
+    if (const auto* items = chain[key].getArray())
+      for (const auto& item : *items)
+        tones += item["kind"].toString() == "insert" ? 0 : 1;
+  state.page = static_cast<int>(Page::Overview);
+  state.selected = tones == 0 ? 0 : kFirstBlock + juce::jmin(returnSelected - kFirstBlock, tones - 1);
 }
 
 void PanelUi::stepPreset(int delta) {

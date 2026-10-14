@@ -165,6 +165,10 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   const bool onPage = page != Page::Overview;
   const auto chain = state.getChain();
   const auto tones = chain.tones();
+  // The block page's block, also the block on the move.
+  const auto pageBlockId = state.getPageBlock();
+  const ChainCell* pageCell = chain.find(pageBlockId);
+  const bool moving = state.moving.load();
   const bool cursorOn = state.active.load();
   const bool editing = state.editing.load();
   const bool knobsInPath = state.knobsInPath.load();
@@ -199,7 +203,7 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   const int switchTop = titleTop + titleH + gap;
   const int switchH = 20;
   const int stageTop = switchTop + switchH + gap;
-  const int stageH = 88;
+  const int stageH = 94;
   const int contextTop = stageTop + stageH + 2;
   const int contextH = 14;
   const int knobTop = contextTop + contextH + 3;
@@ -350,26 +354,72 @@ void DisplayUi::drawMain(juce::Graphics& g) {
     // A page: its title, then one line per entry with the value right.
     g.setColour(kText);
     g.setFont(font(15.0f, true));
-    g.drawText(def.title, stage.withHeight(18).withTrimmedLeft(6), juce::Justification::centredLeft, true);
+    const juce::String pageTitle = page == Page::Block ? (pageCell != nullptr ? pageCell->name : juce::String()) : def.title;
+    g.drawText(pageTitle, stage.withHeight(18).withTrimmedLeft(6), juce::Justification::centredLeft, true);
     const int rowH = 16;
+    const auto choiceText = [](const juce::String& text) {
+      return juce::String::fromUTF8("\xe2\x80\xb9 ") + text + juce::String::fromUTF8(" \xe2\x80\xba");
+    };
     g.setFont(font(13.0f));
+    int line = 0;
     for (int i = 0; i < static_cast<int>(def.entries.size()); ++i) {
       const auto& entry = def.entries[static_cast<size_t>(i)];
-      const auto row = juce::Rectangle<int>(stage.getX(), stage.getY() + 20 + i * (rowH + 1), stage.getWidth(), rowH);
+      auto row = juce::Rectangle<int>(stage.getX(), stage.getY() + 20 + line * (rowH + 1), stage.getWidth(), rowH);
+
+      // Move and remove: two buttons on one line.
+      if (entry.kind == EntryKind::BlockMove || entry.kind == EntryKind::BlockRemove) {
+        const bool left = entry.kind == EntryKind::BlockMove;
+        const auto half = left ? row.withWidth(row.getWidth() / 2 - 2) : row.withTrimmedLeft(row.getWidth() / 2 + 2);
+        cursor(TargetKind::Entry, i, half.toFloat());
+        const bool armed = !left && state.removeArmed.load();
+        g.setColour(armed ? kWarn : kTrack);
+        g.drawRoundedRectangle(half.toFloat().reduced(2.0f, 1.0f), 4.0f, 1.0f);
+        g.setColour(armed ? kWarn : kText);
+        g.drawText(armed ? juce::String("Remove?") : juce::String(entry.label), half, juce::Justification::centred, true);
+        if (!left)
+          ++line;
+        continue;
+      }
+      ++line;
       cursor(TargetKind::Entry, i, row.toFloat());
-      auto* p = params.getParameter(entry.paramId);
       juce::String value;
       bool lit = false;
-      if (auto* choice = dynamic_cast<juce::AudioParameterChoice*>(p)) {
-        value = juce::String::fromUTF8("\xe2\x80\xb9 ") + choice->getCurrentChoiceName() + juce::String::fromUTF8(" \xe2\x80\xba");
-      } else if (p != nullptr) {
-        lit = p->getValue() > 0.5f;
-        value = lit ? "On" : "Off";
+      switch (entry.kind) {
+        case EntryKind::Param:
+          if (auto* choice = dynamic_cast<juce::AudioParameterChoice*>(params.getParameter(entry.paramId))) {
+            value = choiceText(choice->getCurrentChoiceName());
+          } else if (auto* p = params.getParameter(entry.paramId)) {
+            lit = p->getValue() > 0.5f;
+            value = lit ? "On" : "Off";
+          }
+          break;
+        case EntryKind::BlockOn:
+        case EntryKind::BlockNormalize:
+          if (pageCell != nullptr) {
+            lit = entry.kind == EntryKind::BlockOn ? pageCell->enabled : pageCell->normalize;
+            value = lit ? "On" : "Off";
+          }
+          break;
+        case EntryKind::BlockModel:
+          if (pageCell != nullptr) {
+            const int pending = state.pendingModel.load();
+            juce::String modelName;
+            for (size_t m = 0; m < pageCell->models.size(); ++m)
+              if (editing && pending >= 0 ? static_cast<int>(m) == pending : pageCell->models[m].id == pageCell->activeModel)
+                modelName = pageCell->models[m].name;
+            // Shortened so the arrows still show.
+            if (modelName.length() > 20)
+              modelName = modelName.substring(0, 18) + "..";
+            value = pageCell->models.size() > 1 ? choiceText(modelName) : modelName;
+          }
+          break;
+        case EntryKind::BlockMove:
+        case EntryKind::BlockRemove: break;
       }
       g.setColour(kText);
       g.drawText(entry.label, row.withTrimmedLeft(8), juce::Justification::centredLeft, true);
       g.setColour(lit ? kAccent : kDim);
-      g.drawText(value, row.withTrimmedRight(8), juce::Justification::centredRight, true);
+      g.drawText(value, row.withTrimmedRight(8).withTrimmedLeft(90), juce::Justification::centredRight, true);
     }
   } else if (tunerOn) {
     // While the tuner is on it takes the grid's place.
@@ -435,7 +485,10 @@ void DisplayUi::drawMain(juce::Graphics& g) {
           g.fillRoundedRectangle(box, 4.0f);
         else
           g.drawRoundedRectangle(box.reduced(0.5f), 4.0f, 1.0f);
-        if (blockSelected) {
+        if (moving && cell.id == pageBlockId) {
+          g.setColour(kEdit);
+          g.drawRoundedRectangle(box.reduced(1.0f), 4.0f, 3.0f);
+        } else if (blockSelected && !moving) {
           g.setColour(kText);
           g.drawRoundedRectangle(box.reduced(1.0f), 4.0f, 2.0f);
         }
@@ -448,8 +501,10 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   // The knob row: five equal slots along the bottom edge, one above each
   // value encoder. Empty slots stay empty; their encoder does nothing here.
   const float slotW = static_cast<float>(w) / static_cast<float>(kKnobSlots);
-  const float radius = 20.0f;
-  const float cy = static_cast<float>(knobTop) + 4.0f + radius;
+  // The knobs sit on the bottom edge: label in the last line, knob above it.
+  const float knobLabelH = 14.0f;
+  const float radius = 23.0f;
+  const float cy = static_cast<float>(frameH) - 1.0f - knobLabelH - 2.0f - radius;
   const float sweep = juce::MathConstants<float>::pi * 0.75f;
   g.setColour(kTrack);
   g.fillRect(0, knobTop - 2, w, 1);
@@ -458,7 +513,7 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   for (int i = 0; i < static_cast<int>(def.knobs.size()) && i < kKnobSlots; ++i) {
     const auto& k = def.knobs[static_cast<size_t>(i)];
     const float cx = slotW * (static_cast<float>(i) + 0.5f);
-    const float pos = knobPosition(k, params);
+    const float pos = knobPosition(k, params, pageCell);
     cursor(TargetKind::Knob, i,
            juce::Rectangle<float>(cx - slotW * 0.5f + 1.0f, static_cast<float>(knobTop), slotW - 2.0f,
                                   static_cast<float>(knobH - 1)));
@@ -473,13 +528,14 @@ void DisplayUi::drawMain(juce::Graphics& g) {
     g.strokePath(arc, juce::PathStrokeType(4.0f));
 
     const auto cell = juce::Rectangle<float>(cx - slotW * 0.5f, cy - radius, slotW, radius * 2.0f);
-    const auto text = formatKnob(k, params, false);
+    const auto text = formatKnob(k, params, pageCell, false);
     g.setColour(kText);
     g.setFont(font(text.length() > 4 ? 12.0f : 14.0f, true));
     g.drawText(text, cell.reduced(radius * 0.25f, 0.0f), juce::Justification::centred, true);
     g.setColour(kDim);
     g.setFont(font(11.0f));
-    g.drawText(k.label, cell.translated(0.0f, radius * 2.0f + 1.0f).withHeight(14.0f), juce::Justification::centred);
+    g.drawText(k.label, cell.withY(static_cast<float>(frameH) - 1.0f - knobLabelH).withHeight(knobLabelH),
+               juce::Justification::centred);
     if ((fineSlots & (1 << i)) != 0) {
       g.setColour(kAccent);
       g.setFont(font(11.0f, true));
@@ -518,23 +574,36 @@ void DisplayUi::drawMain(juce::Graphics& g) {
       }
       case TargetKind::Block:
         if (juce::isPositiveAndBelow(target.index, static_cast<int>(tones.size())))
-          context = tones[static_cast<size_t>(target.index)]->name;
+          context = tones[static_cast<size_t>(target.index)]->name + "  -  hold for details";
         break;
       case TargetKind::Entry: {
         const auto& entry = def.entries[static_cast<size_t>(target.index)];
-        const bool choice = dynamic_cast<juce::AudioParameterChoice*>(params.getParameter(entry.paramId)) != nullptr;
-        context = editing ? juce::String("Turn to choose, press when done")
-                          : juce::String(entry.label) + (choice ? "  -  press to change" : "  -  press to switch") +
-                                ", hold to go back";
+        const bool choice = entry.kind == EntryKind::Param
+                                ? dynamic_cast<juce::AudioParameterChoice*>(params.getParameter(entry.paramId)) != nullptr
+                                : entry.kind == EntryKind::BlockModel;
+        if (editing)
+          context = "Turn to choose, press when done";
+        else if (entry.kind == EntryKind::BlockMove)
+          context = "Move the block along its row";
+        else if (entry.kind == EntryKind::BlockRemove)
+          context = state.removeArmed.load() ? juce::String("Press again to remove, turn to keep")
+                                             : juce::String("Remove the block from the chain");
+        else if (entry.kind == EntryKind::BlockModel && (pageCell == nullptr || pageCell->models.size() < 2))
+          context = "This tone has one model";
+        else
+          context = juce::String(entry.label) + (choice ? "  -  press to change" : "  -  press to switch") +
+                    ", hold to go back";
         break;
       }
       case TargetKind::Knob: {
         const auto& k = def.knobs[static_cast<size_t>(target.index)];
-        context = juce::String(k.name) + " " + formatKnob(k, params, true) + (editing ? "  -  hold for default" : "");
+        context = juce::String(k.name) + " " + formatKnob(k, params, pageCell, true) + (editing ? "  -  hold for default" : "");
         break;
       }
     }
   }
+  if (moving && pageCell != nullptr)
+    context = "Moving " + pageCell->name + "  -  press to put down";
   g.setColour(kText);
   g.setFont(font(12.0f));
   g.drawText(context, stageLeft, contextTop, w - 2 * stageLeft, contextH, juce::Justification::centred, true);

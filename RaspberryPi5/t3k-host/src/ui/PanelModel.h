@@ -15,11 +15,12 @@
 #include <vector>
 
 #include "ImageDeck.h"
+#include "ChainView.h"
 
 namespace t3k {
 
-enum class Page { Overview, Gate, Pitch, Spread };
-constexpr int kPageCount = 4;
+enum class Page { Overview, Gate, Pitch, Spread, Block };
+constexpr int kPageCount = 5;
 constexpr int kKnobSlots = 5;
 
 // The top line's items, left to right.
@@ -36,22 +37,28 @@ enum class Format {
   Percent,     // normalized 0..1 as 0..100 %
   SpreadOffset,  // bipolar 0..1 -> L/R lag in ms
   CrossoverHz,   // normalized on the image deck's log Hz map
+  GainDb,        // a block's normalized gain, 0.5 = 0 dB, +-24 dB
 };
 
 struct KnobDef {
   const char* label;  // under the knob
   const char* name;   // in the context line
-  const char* paramId;
+  const char* paramId;  // a processor parameter, or the block's own (blockParam)
   Format format;
   float scale{1.0f};  // Tenths only
   float unitStep{0.0f};  // one detent in the parameter's own units; 0 = 1 % of the range
+  bool blockParam{false};  // paramId names a block parameter (setBlockParam)
+  float blockDefault{0.5f};
 };
 
-// A line on a page's stage: a switch (bool parameter, a press flips it) or
-// a choice (a press edits it, turning picks).
+// A line on a page's stage. A parameter entry is a switch (bool, a press
+// flips it) or a choice (a press edits it, turning picks); the block page
+// has entries of its own.
+enum class EntryKind { Param, BlockOn, BlockNormalize, BlockModel, BlockMove, BlockRemove };
 struct EntryDef {
   const char* label;
   const char* paramId;
+  EntryKind kind{EntryKind::Param};
 };
 
 struct PageDef {
@@ -85,6 +92,16 @@ inline const PageDef& pageDef(Page page) {
        {{"OFFSET", "Offset", "spreadOffset", Format::SpreadOffset},
         {"WOBBLE", "Wobble", "spreadWobble", Format::Percent},
         {"X-OVER", "Crossover", "spreadCrossover", Format::CrossoverHz}}},
+      // Block: the title is the block's name. Move and remove share a line.
+      {"", nullptr,
+       {{"Block", nullptr, EntryKind::BlockOn},
+        {"Normalize", nullptr, EntryKind::BlockNormalize},
+        {"Model", nullptr, EntryKind::BlockModel},
+        {"Move", nullptr, EntryKind::BlockMove},
+        {"Remove", nullptr, EntryKind::BlockRemove}},
+       {{"INPUT", "Input", "inputGain", Format::GainDb, 1.0f, 0.0f, true, 0.5f},
+        {"OUTPUT", "Output", "outputGain", Format::GainDb, 1.0f, 0.0f, true, 0.5f},
+        {"MIX", "Mix", "mix", Format::Percent, 1.0f, 0.0f, true, 1.0f}}},
   };
   return pages[static_cast<int>(page)];
 }
@@ -133,14 +150,31 @@ inline float realValue(const juce::RangedAudioParameter& p) {
   return p.convertFrom0to1(p.getValue());
 }
 
+/** A block knob's normalized value. */
+inline float blockValue(const KnobDef& knob, const ChainCell& cell) {
+  const juce::String id(knob.paramId);
+  return id == "inputGain" ? cell.inputGain : id == "outputGain" ? cell.outputGain : cell.mix;
+}
+
 /** The knob's value as text: the number alone for inside the knob, or with
-    its unit for the context line. */
-inline juce::String formatKnob(const KnobDef& knob, juce::AudioProcessorValueTreeState& params, bool withUnit) {
+    its unit for the context line. `cell` is the block page's block. */
+inline juce::String formatKnob(const KnobDef& knob, juce::AudioProcessorValueTreeState& params, const ChainCell* cell,
+                               bool withUnit) {
+  const auto unit = [withUnit](const char* u) { return withUnit ? juce::String(" ") + u : juce::String(); };
+  if (knob.blockParam) {
+    if (cell == nullptr)
+      return "-";
+    const float n = blockValue(knob, *cell);
+    if (knob.format == Format::GainDb) {
+      const float db = (n - 0.5f) * 48.0f;
+      return (db > 0.04f ? "+" : "") + juce::String(db, 1) + unit("dB");
+    }
+    return juce::String(juce::roundToInt(n * 100.0f)) + unit("%");
+  }
   auto* p = findParam(params, knob.paramId);
   if (p == nullptr)
     return "-";
   const float v = realValue(*p);
-  const auto unit = [withUnit](const char* u) { return withUnit ? juce::String(" ") + u : juce::String(); };
   switch (knob.format) {
     case Format::Tenths: return juce::String(v * knob.scale, 1);
     case Format::Db: return juce::String(juce::roundToInt(v)) + unit("dB");
@@ -164,12 +198,15 @@ inline juce::String formatKnob(const KnobDef& knob, juce::AudioProcessorValueTre
       return juce::String(ms > 0.0f ? "R " : "L ") + juce::String(std::abs(ms), 1) + unit("ms");
     }
     case Format::CrossoverHz: return juce::String(juce::roundToInt(deckCrossoverHz(v))) + unit("Hz");
+    case Format::GainDb: break;
   }
   return {};
 }
 
 /** Where the knob's arc stands, 0..1. */
-inline float knobPosition(const KnobDef& knob, juce::AudioProcessorValueTreeState& params) {
+inline float knobPosition(const KnobDef& knob, juce::AudioProcessorValueTreeState& params, const ChainCell* cell) {
+  if (knob.blockParam)
+    return cell != nullptr ? juce::jlimit(0.0f, 1.0f, blockValue(knob, *cell)) : 0.0f;
   auto* p = findParam(params, knob.paramId);
   return p != nullptr ? juce::jlimit(0.0f, 1.0f, p->getValue()) : 0.0f;
 }
