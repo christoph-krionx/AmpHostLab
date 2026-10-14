@@ -8,6 +8,9 @@ After=sound.target local-fs.target
 [Service]
 Type=simple
 User=pi
+# Full CPU clock while the host runs: clock changes cost the audio thread
+# time. The "+" runs this line as root.
+ExecStartPre=+/bin/sh -c 'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$g"; done'
 ExecStart=/home/pi/t3k-host/build/t3k-host_artefacts/Release/t3k-host
 Restart=on-failure
 RestartSec=3

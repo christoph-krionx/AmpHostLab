@@ -132,7 +132,11 @@ The audio thread needs realtime priority and locked memory. For the user that ru
 @audio   -  memlock    unlimited
 ```
 
-and add the user to the `audio` group.
+and add the user to the `audio` group. The systemd unit sets both limits itself.
+
+The host raises the audio device's thread to `SCHED_FIFO` priority 80 on its first callback (JUCE's ALSA thread starts with normal scheduling) and logs `Audio thread: realtime (SCHED_FIFO 80)`, or a warning when the limit refuses it. The systemd unit also switches the CPU governor to `performance` before the host starts, so clock changes never slow the audio thread down.
+
+Keep the CM5 cool: `vcgencmd get_throttled` reports past throttling in its upper bits (`0xe0000` = the clock was capped and throttled after reaching the soft temperature limit). A throttled CPU can miss audio deadlines.
 
 ## Where files live
 

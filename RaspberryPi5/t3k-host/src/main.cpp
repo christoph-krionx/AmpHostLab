@@ -9,11 +9,13 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include <csignal>
+#include <cstring>
 #include <iostream>
 #include <sys/mman.h>
 
 #include "ChainWatcher.h"
 #include "HostConfig.h"
+#include "RealtimeCallback.h"
 #include "Processor.h"
 #include "display/DisplayUi.h"
 #include "input/EncoderInput.h"
@@ -123,10 +125,12 @@ juce::String findDevice(const juce::StringArray& names, const juce::String& want
   return {};
 }
 
-// Polls the quit flag and prints load figures from the message thread.
+// Polls the quit flag and prints load figures from the message thread,
+// and says once whether the audio thread got realtime scheduling.
 class Monitor : private juce::Timer {
 public:
-  Monitor(juce::AudioDeviceManager& d, int statusSeconds) : dm(d), statusTicks(statusSeconds * 4) {
+  Monitor(juce::AudioDeviceManager& d, const t3k::RealtimeCallback& r, int statusSeconds)
+      : dm(d), realtime(r), statusTicks(statusSeconds * 4) {
     startTimer(250);
   }
 
@@ -137,6 +141,14 @@ private:
       juce::MessageManager::getInstance()->stopDispatchLoop();
       return;
     }
+    if (const int result = realtime.result(); result != reportedRealtime) {
+      reportedRealtime = result;
+      if (result > 0)
+        std::cout << "Audio thread: realtime (SCHED_FIFO " << result << ")" << std::endl;
+      else if (result < 0)
+        std::cerr << "warning: audio thread stays at normal priority: " << std::strerror(-result)
+                  << " (check the rtprio limit)" << std::endl;
+    }
     if (statusTicks > 0 && ++ticks % statusTicks == 0)
       if (auto* dev = dm.getCurrentAudioDevice())
         std::cout << "cpu " << juce::String(dm.getCpuUsage() * 100.0, 1) << " %  xruns "
@@ -144,6 +156,8 @@ private:
   }
 
   juce::AudioDeviceManager& dm;
+  const t3k::RealtimeCallback& realtime;
+  int reportedRealtime{0};
   int statusTicks;
   int ticks{0};
 };
@@ -341,6 +355,8 @@ int main(int argc, char** argv) {
 
   juce::AudioProcessorPlayer player;
   player.setProcessor(&processor);
+  // Below the limit of 95 the service allows, above JUCE's own threads.
+  t3k::RealtimeCallback realtime(player, 80);
 
   deviceManager.setCurrentAudioDeviceType("ALSA", true);
   const auto error = deviceManager.initialise(2, 2, nullptr, false, {}, &setup);
@@ -349,7 +365,7 @@ int main(int argc, char** argv) {
     player.setProcessor(nullptr);
     return 1;
   }
-  deviceManager.addAudioCallback(&player);
+  deviceManager.addAudioCallback(&realtime);
 
   if (auto* dev = deviceManager.getCurrentAudioDevice()) {
     const auto rate = dev->getCurrentSampleRate();
@@ -427,14 +443,14 @@ int main(int argc, char** argv) {
     display->showMain();
 
   {
-    Monitor monitor(deviceManager, opt.statusSeconds);
+    Monitor monitor(deviceManager, realtime, opt.statusSeconds);
     juce::MessageManager::getInstance()->runDispatchLoop();
   }
 
   encoder.reset();
   panel.reset();
   display.reset();
-  deviceManager.removeAudioCallback(&player);
+  deviceManager.removeAudioCallback(&realtime);
   deviceManager.closeAudioDevice();
   player.setProcessor(nullptr);
   return 0;
