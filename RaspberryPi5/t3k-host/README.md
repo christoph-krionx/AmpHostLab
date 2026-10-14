@@ -44,7 +44,7 @@ t3k-host --device Scarlett --block 64 --tone ~/tones/my-amp.nam
 | `--lcd-speed <hz>` | SPI clock, default 16000000 |
 | `--encoder <a,b,sw>` | Front-panel encoder on these BCM GPIOs, e.g. `5,6,26` |
 | `--preview <png>` | Draw the main screen into a 320x240 PNG and exit, no audio |
-| `--preview-cursor <n>` / `--preview-edit` | Cursor position and edit mode in the preview |
+| `--preview-cursor <n>` / `--preview-edit` / `--preview-page <name>` | Cursor position, edit mode and page (`overview`, `gate`, `pitch`, `spread`) in the preview |
 
 ### Settings file
 
@@ -91,9 +91,18 @@ The screen text needs a font that fontconfig can find, for example DejaVu Sans i
 
 ## Encoder
 
-One rotary encoder with push button operates the device. On the top level, turning moves the cursor in screen order (wrapping around): preset, save, tuner, settings, the blocks of the chain, then gain, bass, mid, treble, volume, gate, pitch and spread. A press enters the selected item, turning then changes its value, and another press leaves; in the preset item turning steps through the presets. On a block, a press switches it on or off.
+The screen has the same frame on every page: the preset name with the save, tuner and settings buttons, the effect switches (gate, pitch, spread), the stage between the input and output meters, a context line, and along the bottom edge five knob slots, one above each of the (planned) value encoders.
 
-A star next to the preset name marks unsaved changes; the save button writes the current sound back to the loaded preset. The tuner takes the grid's place while its item is entered. The settings button has no function yet. The line under the grid describes whatever the cursor is on.
+The navigation encoder with push button operates the device. Turning moves the cursor in screen order (wrapping around). On the overview: preset, save, tuner, settings, the effect switches, the blocks of the chain, then the knobs gain, bass, mid, treble and volume.
+
+- A short press switches what the cursor is on (a block, an effect, a switch on a page) or starts editing it (preset, knob, choice); turning then changes the value and another press ends editing. In the preset item turning steps through the presets.
+- A long press (600 ms, it fires while the button is still held) on an effect switch opens that effect's page in place of the grid; on a page it goes back. While a knob is being edited, a long press sets it to its default.
+
+The gate, pitch and spread pages list their switches on the stage and put their continuous parameters into the knob row; the gate page marks its threshold on the input meter. Until the value encoders are fitted, the navigation encoder's cursor also walks through the knob slots. Value encoders will work the slot above them directly: a short press toggles fine steps, a long press resets the knob.
+
+A star next to the preset name marks unsaved changes; the save button writes the current sound back to the loaded preset. The tuner takes the grid's place while its item is entered. The settings button has no function yet. The context line describes whatever the cursor is on.
+
+`--preview <png> --preview-page gate --preview-cursor 1` draws a page into a PNG without audio, to check the layout.
 
 Presets are the plugin's `.t3kpreset` files in `~/.config/TONE3000/Presets/` (factory presets in `Presets/Factory/`). The chain is drawn as the plugin's grid: one row in mono, two in stereo, at least five slots wide.
 

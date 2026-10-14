@@ -96,17 +96,20 @@ private:
         if (!cell.insert)
           chainPrint << cell.name << (cell.enabled ? "+" : "-");
 
-    // The blocks sit in the middle of the cursor order: when their number
-    // changes, keep the cursor on the knob or switch it was on, and move
-    // it off a block that is gone.
-    const int oldBlocks = static_cast<int>(state.getChain().tones().size());
-    const int newBlocks = static_cast<int>(view.tones().size());
-    const int position = state.selected.load();
-    if (position >= kUiHeadItems + oldBlocks) {
-      state.selected = position + newBlocks - oldBlocks;
-    } else if (position >= kUiHeadItems + newBlocks) {
-      state.selected = 0;
-      state.editing = false;
+    // On the overview the blocks sit in the middle of the cursor order:
+    // when their number changes, keep the cursor on the knob it was on,
+    // and move it off a block that is gone.
+    if (state.currentPage() == Page::Overview) {
+      const int firstBlock = kHeadItems + kSwitches;
+      const int oldBlocks = static_cast<int>(state.getChain().tones().size());
+      const int newBlocks = static_cast<int>(view.tones().size());
+      const int position = state.selected.load();
+      if (position >= firstBlock + oldBlocks) {
+        state.selected = position + newBlocks - oldBlocks;
+      } else if (position >= firstBlock + newBlocks) {
+        state.selected = 0;
+        state.editing = false;
+      }
     }
     state.setChain(std::move(view));
   }

@@ -9,34 +9,9 @@
 #include <string>
 #include <vector>
 
+#include "ui/PanelModel.h"
+
 namespace t3k {
-
-// The fixed items of the panel.
-enum class UiItem { Preset, Save, Tuner, Settings, Gain, Bass, Mid, Treble, Volume, Gate, Pitch, Spread };
-constexpr int kUiItemCount = 12;
-// The items of the top line; the chain's blocks come after them in the
-// cursor order, the rest after the blocks.
-constexpr int kUiHeadItems = 4;
-
-// What a cursor position points at. The cursor runs in screen order: the
-// top line (preset, save, tuner, settings), the chain's blocks, then the knobs
-// and the effect switches.
-struct CursorTarget {
-  bool isBlock;
-  int block;    // index among the chain's tone blocks, when isBlock
-  UiItem item;  // otherwise
-};
-
-inline CursorTarget cursorTarget(int position, int blockCount) {
-  if (position < kUiHeadItems)
-    return {false, 0, static_cast<UiItem>(juce::jmax(0, position))};
-  if (position < kUiHeadItems + blockCount)
-    return {true, position - kUiHeadItems, UiItem::Preset};
-  return {false, 0, static_cast<UiItem>(position - blockCount)};
-}
-
-// The gate's threshold range on the panel; one step below the minimum is "off".
-constexpr float kGateMinDb = -90.0f;
 
 // One slot of the chain grid.
 struct ChainCell {
@@ -70,8 +45,14 @@ struct ChainView {
 
 struct UiState {
   std::atomic<bool> active{false};  // false = no encoder, draw no cursor
-  std::atomic<int> selected{0};
+  std::atomic<int> page{static_cast<int>(Page::Overview)};
+  std::atomic<int> selected{0};     // index into cursorTargets() of the page
   std::atomic<bool> editing{false};
+  // True while the knob slots are worked by the navigation encoder (no
+  // value encoders fitted): the cursor then walks through them too.
+  std::atomic<bool> knobsInPath{true};
+  // Value encoders in fine mode, one bit per knob slot.
+  std::atomic<int> fineSlots{0};
   // Position in the preset list, for the display's context line.
   std::atomic<int> presetIndex{-1};
   std::atomic<int> presetCount{0};
@@ -82,6 +63,8 @@ struct UiState {
   // Tuner: switched by the panel, measured on the message thread.
   std::atomic<bool> tunerOn{false};
   std::atomic<float> tunerHz{0.0f};  // 0 = no reliable pitch
+
+  Page currentPage() const { return static_cast<Page>(page.load()); }
 
   ChainView getChain() const {
     const juce::ScopedLock lock(chainLock);

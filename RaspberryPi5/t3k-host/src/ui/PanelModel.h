@@ -1,0 +1,177 @@
+// PanelModel: the pages of the front panel as data, shared by the display
+// (what to draw) and the panel logic (what a turn or press does).
+//
+// Every page has the same frame: the top line, the switch row, the stage
+// (the chain grid on the overview, a page's entries otherwise) and the knob
+// row of five slots along the bottom edge, one slot above each value
+// encoder. The navigation encoder's cursor walks the targets in screen
+// order; while there are no value encoders it walks through the knob slots
+// as well and edits them itself.
+
+#pragma once
+
+#include <juce_audio_processors/juce_audio_processors.h>
+
+#include <vector>
+
+#include "ImageDeck.h"
+
+namespace t3k {
+
+enum class Page { Overview, Gate, Pitch, Spread };
+constexpr int kPageCount = 4;
+constexpr int kKnobSlots = 5;
+
+// The top line's items, left to right.
+enum class HeadItem { Preset, Save, Tuner, Settings };
+constexpr int kHeadItems = 4;
+
+// How a knob shows its value.
+enum class Format {
+  Tenths,      // the parameter times `scale`, one decimal (overview knobs, 0..10)
+  Db,          // whole dB
+  Ms,          // whole ms
+  Hz,          // whole Hz; the top of the range reads "Off" (pitch tonality)
+  Semitones,   // signed; whole while pitch STEP is on
+  Percent,     // normalized 0..1 as 0..100 %
+  SpreadOffset,  // bipolar 0..1 -> L/R lag in ms
+  CrossoverHz,   // normalized on the image deck's log Hz map
+};
+
+struct KnobDef {
+  const char* label;  // under the knob
+  const char* name;   // in the context line
+  const char* paramId;
+  Format format;
+  float scale{1.0f};  // Tenths only
+  float unitStep{0.0f};  // one detent in the parameter's own units; 0 = 1 % of the range
+};
+
+// A line on a page's stage: a switch (bool parameter, a press flips it) or
+// a choice (a press edits it, turning picks).
+struct EntryDef {
+  const char* label;
+  const char* paramId;
+};
+
+struct PageDef {
+  const char* title;
+  const char* enableParam;  // the page's own on/off, also its switch-row badge
+  std::vector<EntryDef> entries;
+  std::vector<KnobDef> knobs;  // at most kKnobSlots
+};
+
+inline const PageDef& pageDef(Page page) {
+  static const PageDef pages[kPageCount] = {
+      {"", nullptr, {},
+       {{"GAIN", "Gain", "inputLevel", Format::Tenths, 10.0f},
+        {"BASS", "Bass", "toneBass", Format::Tenths, 1.0f},
+        {"MID", "Mid", "toneMid", Format::Tenths, 1.0f},
+        {"TREBLE", "Treble", "toneTreble", Format::Tenths, 1.0f},
+        {"VOLUME", "Volume", "outputLevel", Format::Tenths, 10.0f}}},
+      {"Noise gate", "gateEnabled", {{"Gate", "gateEnabled"}},
+       {{"THRESH", "Threshold", "gateThreshold", Format::Db, 1.0f, 1.0f},
+        {"RELEASE", "Release", "gateRelease", Format::Ms},
+        {"HOLD", "Hold", "gateHold", Format::Ms, 1.0f, 2.0f},
+        {"RANGE", "Range", "gateRange", Format::Db, 1.0f, 1.0f}}},
+      {"Pitch", "pitchEnabled", {{"Pitch", "pitchEnabled"}, {"Step", "pitchStep"}, {"Window", "pitchWindow"}},
+       {{"SEMI", "Semitones", "pitchSemitones", Format::Semitones, 1.0f, 1.0f},
+        {"TONALITY", "Tonality", "pitchTonality", Format::Hz}}},
+      {"Spread", "spreadEnabled",
+       {{"Spread", "spreadEnabled"},
+        {"Wobble", "spreadWobbleEnabled"},
+        {"Crossover", "spreadCrossoverEnabled"},
+        {"Diffuse", "spreadDiffuseEnabled"}},
+       {{"OFFSET", "Offset", "spreadOffset", Format::SpreadOffset},
+        {"WOBBLE", "Wobble", "spreadWobble", Format::Percent},
+        {"X-OVER", "Crossover", "spreadCrossover", Format::CrossoverHz}}},
+  };
+  return pages[static_cast<int>(page)];
+}
+
+// The switch row, left to right; each opens its page on a long press.
+constexpr Page kSwitchPages[] = {Page::Gate, Page::Pitch, Page::Spread};
+constexpr int kSwitches = 3;
+
+// One stop of the navigation cursor.
+enum class TargetKind { Head, Switch, Block, Entry, Knob };
+struct Target {
+  TargetKind kind;
+  int index;  // HeadItem, switch, tone block, entry or knob slot
+};
+
+/** The cursor stops of a page in screen order. On the overview: the top
+    line, the switch row, the chain's tone blocks, the knobs. On a page:
+    save, the stage entries, the knobs. Knobs only while they are edited
+    with the navigation encoder (no value encoders). */
+inline std::vector<Target> cursorTargets(Page page, int blockCount, bool knobsInPath) {
+  std::vector<Target> out;
+  const auto& def = pageDef(page);
+  if (page == Page::Overview) {
+    for (int i = 0; i < kHeadItems; ++i)
+      out.push_back({TargetKind::Head, i});
+    for (int i = 0; i < kSwitches; ++i)
+      out.push_back({TargetKind::Switch, i});
+    for (int i = 0; i < blockCount; ++i)
+      out.push_back({TargetKind::Block, i});
+  } else {
+    out.push_back({TargetKind::Head, static_cast<int>(HeadItem::Save)});
+    for (int i = 0; i < static_cast<int>(def.entries.size()); ++i)
+      out.push_back({TargetKind::Entry, i});
+  }
+  if (knobsInPath)
+    for (int i = 0; i < static_cast<int>(def.knobs.size()); ++i)
+      out.push_back({TargetKind::Knob, i});
+  return out;
+}
+
+inline juce::RangedAudioParameter* findParam(juce::AudioProcessorValueTreeState& params, const char* id) {
+  return params.getParameter(id);
+}
+
+inline float realValue(const juce::RangedAudioParameter& p) {
+  return p.convertFrom0to1(p.getValue());
+}
+
+/** The knob's value as text: the number alone for inside the knob, or with
+    its unit for the context line. */
+inline juce::String formatKnob(const KnobDef& knob, juce::AudioProcessorValueTreeState& params, bool withUnit) {
+  auto* p = findParam(params, knob.paramId);
+  if (p == nullptr)
+    return "-";
+  const float v = realValue(*p);
+  const auto unit = [withUnit](const char* u) { return withUnit ? juce::String(" ") + u : juce::String(); };
+  switch (knob.format) {
+    case Format::Tenths: return juce::String(v * knob.scale, 1);
+    case Format::Db: return juce::String(juce::roundToInt(v)) + unit("dB");
+    case Format::Ms: return juce::String(juce::roundToInt(v)) + unit("ms");
+    case Format::Hz:
+      if (p->getValue() >= 0.999f)
+        return "Off";
+      return juce::String(juce::roundToInt(v)) + unit("Hz");
+    case Format::Semitones: {
+      auto* step = findParam(params, "pitchStep");
+      const bool whole = step == nullptr || step->getValue() > 0.5f;
+      const auto text = whole ? juce::String(juce::roundToInt(v)) : juce::String(v, 1);
+      return (v > 0.0f && text != "0" ? "+" : "") + text + unit("st");
+    }
+    case Format::Percent: return juce::String(juce::roundToInt(v * 100.0f)) + unit("%");
+    case Format::SpreadOffset: {
+      // Same decode as SpreadParams: > 0 lags the right channel.
+      const float ms = (juce::jlimit(0.0f, 1.0f, v) * 2.0f - 1.0f) * 24.0f;
+      if (std::abs(ms) < 0.12f)
+        return "0" + unit("ms");
+      return juce::String(ms > 0.0f ? "R " : "L ") + juce::String(std::abs(ms), 1) + unit("ms");
+    }
+    case Format::CrossoverHz: return juce::String(juce::roundToInt(deckCrossoverHz(v))) + unit("Hz");
+  }
+  return {};
+}
+
+/** Where the knob's arc stands, 0..1. */
+inline float knobPosition(const KnobDef& knob, juce::AudioProcessorValueTreeState& params) {
+  auto* p = findParam(params, knob.paramId);
+  return p != nullptr ? juce::jlimit(0.0f, 1.0f, p->getValue()) : 0.0f;
+}
+
+}  // namespace t3k

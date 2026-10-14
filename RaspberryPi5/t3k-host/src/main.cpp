@@ -16,7 +16,8 @@
 #include "HostConfig.h"
 #include "Processor.h"
 #include "display/DisplayUi.h"
-#include "input/EncoderUi.h"
+#include "input/EncoderInput.h"
+#include "ui/PanelUi.h"
 
 namespace {
 
@@ -47,6 +48,7 @@ struct Options {
   bool listParams{false};
   juce::String preview;  // write the screen to this PNG instead of running
   int previewCursor{-1};
+  juce::String previewPage;  // overview | gate | pitch | spread
   bool previewEdit{false};
 };
 
@@ -69,6 +71,7 @@ void printUsage() {
                "  --preview <png>       draw the screen into a PNG (320x240) and exit, no audio\n"
                "  --preview-cursor <n>  cursor position in the preview (default: no cursor)\n"
                "  --preview-edit        show the cursor in edit mode\n"
+               "  --preview-page <name> page in the preview: overview | gate | pitch | spread\n"
                "  --encoder <a,b,sw>    front-panel encoder on these GPIOs (e.g. 5,6,26)\n"
                "  --lcd <panel>        SPI display: none | ili9341 | st7789 (default none)\n"
                "  --lcd-rotation <0..3> quarter turns (default 1, landscape)\n"
@@ -96,6 +99,7 @@ bool parseArgs(const juce::StringArray& args, Options& o) {
     else if (a == "--preview") o.preview = value();
     else if (a == "--preview-cursor") o.previewCursor = value().getIntValue();
     else if (a == "--preview-edit") o.previewEdit = true;
+    else if (a == "--preview-page") o.previewPage = value();
     else if (a == "--encoder") o.encoder = value();
     else if (a == "--lcd") o.lcd = value();
     else if (a == "--lcd-rotation") o.lcdRotation = value().getIntValue();
@@ -244,6 +248,8 @@ int main(int argc, char** argv) {
             processor.loadPreset(p["id"].toString());
       previewUi.setTitle(opt.preset);
     }
+    const juce::StringArray pageNames{"overview", "gate", "pitch", "spread"};
+    previewState.page = juce::jmax(0, pageNames.indexOf(opt.previewPage, true));
     previewState.active = opt.previewCursor >= 0;
     previewState.selected = juce::jmax(0, opt.previewCursor);
     previewState.editing = opt.previewEdit;
@@ -381,23 +387,29 @@ int main(int argc, char** argv) {
 
   t3k::ChainWatcher chainWatcher(processor, uiState);
 
-  std::unique_ptr<t3k::EncoderUi> encoder;
+  std::unique_ptr<t3k::PanelUi> panel;
+  std::unique_ptr<t3k::EncoderInput> encoder;
   if (opt.encoder.isNotEmpty()) {
-    const auto pins = juce::StringArray::fromTokens(opt.encoder, ",", "");
-    encoder = std::make_unique<t3k::EncoderUi>(processor, uiState, display.get());
-    encoder->setCurrentPreset(opt.preset);
+    panel = std::make_unique<t3k::PanelUi>(processor, uiState, display.get());
+    panel->setCurrentPreset(opt.preset);
     // The preset turned to last comes back on the next start.
     if (configFile.existsAsFile())
-      encoder->onPresetLoaded = [configFile](const juce::String& name) {
+      panel->onPresetLoaded = [configFile](const juce::String& name) {
         if (!t3k::HostConfig::rememberPreset(configFile, name))
           std::cerr << "Could not write " << configFile.getFullPathName() << std::endl;
       };
+    encoder = std::make_unique<t3k::EncoderInput>([&panel](const t3k::InputEvent& event) {
+      if (panel != nullptr)
+        panel->handle(event);
+    });
+    const auto pins = juce::StringArray::fromTokens(opt.encoder, ",", "");
     const auto encoderError =
         pins.size() == 3 ? encoder->start({pins[0].getIntValue(), pins[1].getIntValue(), pins[2].getIntValue()})
                          : juce::String("expected --encoder a,b,sw");
     if (encoderError.isNotEmpty()) {
       std::cerr << "Encoder not available: " << encoderError << std::endl;
       encoder.reset();
+      panel.reset();
     }
   }
 
@@ -410,6 +422,7 @@ int main(int argc, char** argv) {
   }
 
   encoder.reset();
+  panel.reset();
   display.reset();
   deviceManager.removeAudioCallback(&player);
   deviceManager.closeAudioDevice();

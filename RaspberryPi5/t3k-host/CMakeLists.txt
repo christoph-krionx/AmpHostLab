@@ -72,8 +72,9 @@ target_sources(t3k-host PRIVATE
     src/main.cpp
     src/display/DisplayUi.cpp
     src/display/SpiLcd.cpp
+    src/input/EncoderInput.cpp
     src/input/EncoderReader.cpp
-    src/input/EncoderUi.cpp
+    src/ui/PanelUi.cpp
     ${T3K_PLUGIN}/src/AutoOffset.cpp
     ${T3K_PLUGIN}/src/BlockEq.cpp
     ${T3K_PLUGIN}/src/BlockSpectrum.cpp
