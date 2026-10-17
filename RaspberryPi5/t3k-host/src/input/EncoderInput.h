@@ -21,9 +21,9 @@ public:
   explicit EncoderInput(std::function<void(const InputEvent&)> sink);
   ~EncoderInput() override;
 
-  /** The navigation encoder on these pins. Returns an error message, empty
-      on success. */
-  juce::String start(const EncoderPins& nav);
+  /** The navigation encoder on these pins, and optionally the model
+      encoder. Returns an error message, empty on success. */
+  juce::String start(const EncoderPins& nav, const EncoderPins* model = nullptr);
 
 private:
   void run() override;

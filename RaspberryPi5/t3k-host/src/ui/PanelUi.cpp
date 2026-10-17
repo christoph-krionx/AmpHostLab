@@ -1,7 +1,9 @@
 #include "PanelUi.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iostream>
+#include <thread>
 
 #include "Processor.h"
 #include "display/DisplayUi.h"
@@ -48,11 +50,7 @@ int freshToneIndex(TONE3000Processor& processor, const std::string& blockId) {
 }  // namespace
 
 PanelUi::PanelUi(TONE3000Processor& p, UiState& s, DisplayUi* d) : processor(p), state(s), display(d) {
-  const auto list = processor.getPresetList();
-  if (const auto* items = list["presets"].getArray())
-    for (const auto& item : *items)
-      presets.push_back({item["id"].toString(), item["name"].toString()});
-  state.presetCount = static_cast<int>(presets.size());
+  readPresets();
   state.page = static_cast<int>(Page::Overview);
   state.selected = 0;
   state.editing = false;
@@ -63,6 +61,80 @@ PanelUi::~PanelUi() {
   stopTimer();
   state.active = false;
   state.tunerOn = false;
+}
+
+void PanelUi::readPresets() {
+  presets.clear();
+  const auto list = processor.getPresetList();
+  if (const auto* items = list["presets"].getArray())
+    for (const auto& item : *items)
+      presets.push_back({item["id"].toString(), item["name"].toString()});
+  state.presetCount = static_cast<int>(presets.size());
+}
+
+void PanelUi::presetFolderChanged(const juce::StringArray& changedIds) {
+  // Keep pointing at the same preset, wherever the new order puts it.
+  const juce::String activeId =
+      juce::isPositiveAndBelow(presetIndex, static_cast<int>(presets.size())) ? presets[static_cast<size_t>(presetIndex)].id
+                                                                               : juce::String();
+  readPresets();
+  presetIndex = -1;
+  for (size_t i = 0; i < presets.size(); ++i)
+    if (activeId.isNotEmpty() && presets[i].id == activeId)
+      presetIndex = static_cast<int>(i);
+  state.presetIndex = presetIndex;
+  std::cout << "Presets changed: " << presets.size() << " in the list" << std::endl;
+  state.notify("Presets updated");
+  if (presetIndex < 0)
+    return;
+
+  const auto& active = presets[static_cast<size_t>(presetIndex)];
+  if (display != nullptr)
+    display->setTitle(active.name);  // it may have been renamed
+  // The playing preset's file was replaced: play the new one, unless the
+  // device has changes of its own that would be lost, or a preset is about
+  // to load anyway.
+  if (!changedIds.contains(active.id) || state.presetDirty.load() || isTimerRunning())
+    return;
+  if (processor.loadPreset(active.id)) {
+    state.presetSaved = true;  // the reloaded sound is the new reference
+    std::cout << "Preset reloaded: " << active.name << std::endl;
+    state.notify("Preset reloaded: " + active.name);
+  }
+}
+
+void PanelUi::toggleTuner() {
+  const bool on = !state.tunerOn.load();
+  state.removeArmed = false;
+  state.powerArmed = false;
+  if (on) {
+    // The tuner shows on the overview, with the cursor on its button as if
+    // it had been pressed there.
+    state.moving = false;
+    state.page = static_cast<int>(Page::Overview);
+    state.selected = static_cast<int>(HeadItem::Tuner);
+  }
+  state.editing = on;
+  state.tunerOn = on;
+}
+
+void PanelUi::presetChangedElsewhere(const juce::String& presetId) {
+  if (juce::isPositiveAndBelow(presetIndex, static_cast<int>(presets.size())) &&
+      presets[static_cast<size_t>(presetIndex)].id == presetId)
+    return;  // the panel loaded it itself
+  for (size_t i = 0; i < presets.size(); ++i) {
+    if (presets[i].id != presetId)
+      continue;
+    stopTimer();  // a preset the encoder was about to load is overtaken
+    presetIndex = static_cast<int>(i);
+    state.presetIndex = presetIndex;
+    if (display != nullptr)
+      display->setTitle(presets[i].name);
+    std::cout << "Preset loaded (MIDI): " << presets[i].name << std::endl;
+    if (onPresetLoaded)
+      onPresetLoaded(presets[i].name);
+    return;
+  }
 }
 
 void PanelUi::setCurrentPreset(const juce::String& name) {
@@ -91,6 +163,10 @@ void PanelUi::handle(const InputEvent& event) {
         resetKnob(slot);
       break;
     }
+    case InputEvent::Source::Model:
+      if (event.kind == InputEvent::Kind::Turn)
+        turnModelEncoder(event.delta);
+      break;
     case InputEvent::Source::Footswitch: break;  // not assigned yet
   }
 }
@@ -113,10 +189,14 @@ void PanelUi::handleNav(const InputEvent& event) {
   const bool editing = state.editing.load();
 
   // An armed remove only survives the press that confirms it.
-  const bool onRemove = target.kind == TargetKind::Entry && state.currentPage() == Page::Block &&
-                        pageDef(Page::Block).entries[static_cast<size_t>(target.index)].kind == EntryKind::BlockRemove;
-  if (!(event.kind == InputEvent::Kind::Press && onRemove))
+  const auto entryKind = target.kind == TargetKind::Entry
+                             ? pageDef(state.currentPage()).entries[static_cast<size_t>(target.index)].kind
+                             : EntryKind::Param;
+  const bool confirming = event.kind == InputEvent::Kind::Press;
+  if (!(confirming && entryKind == EntryKind::BlockRemove))
     state.removeArmed = false;
+  if (!(confirming && entryKind == EntryKind::PowerOff))
+    state.powerArmed = false;
 
   switch (event.kind) {
     case InputEvent::Kind::Turn:
@@ -163,9 +243,14 @@ void PanelUi::press(const Target& target) {
     case TargetKind::Block: toggleBlock(target.index); break;
     case TargetKind::Entry: {
       const auto& entry = def.entries[static_cast<size_t>(target.index)];
-      if (entry.kind == EntryKind::InputMode)
+      if (entry.kind == EntryKind::InputMode) {
         state.editing = true;
-      else if (entry.kind != EntryKind::Param)
+      } else if (entry.kind == EntryKind::PowerOff) {
+        if (state.powerArmed.load())
+          powerOff();
+        else
+          state.powerArmed = true;
+      } else if (entry.kind != EntryKind::Param)
         pressBlockEntry(entry.kind);
       else if (isChoice(entry.paramId))
         state.editing = true;
@@ -206,7 +291,8 @@ void PanelUi::pressBlockEntry(EntryKind kind) {
         state.removeArmed = true;
       break;
     case EntryKind::Param:
-    case EntryKind::InputMode: break;
+    case EntryKind::InputMode:
+    case EntryKind::PowerOff: break;
   }
 }
 
@@ -219,6 +305,87 @@ void PanelUi::longPress(const Target& target) {
     openPage(kSwitchPages[target.index]);
   else if (target.kind == TargetKind::Block)
     openBlockPage(target.index);
+  else if (target.kind == TargetKind::Head && target.index == static_cast<int>(HeadItem::Preset))
+    discardChanges();
+}
+
+// Back to the preset as it is saved.
+void PanelUi::discardChanges() {
+  if (!state.presetDirty.load()) {
+    state.notify("No changes to discard");
+    return;
+  }
+  if (!juce::isPositiveAndBelow(presetIndex, static_cast<int>(presets.size())))
+    return;
+  const auto& preset = presets[static_cast<size_t>(presetIndex)];
+  if (processor.loadPreset(preset.id)) {
+    state.presetSaved = true;
+    state.notify("Changes discarded");
+    std::cout << "Changes discarded: " << preset.name << std::endl;
+  }
+}
+
+// The device shuts down; the screen keeps telling when it is safe to
+// unplug, since the panel holds its last picture while it has power.
+// Needs a sudoers rule for the user (see README).
+void PanelUi::powerOff() {
+  state.powerArmed = false;
+  state.shuttingDown = true;
+  std::cout << "Power off" << std::endl;
+  std::thread([weak = juce::WeakReference<PanelUi>(this)] {
+    if (std::system("sudo -n /usr/bin/systemctl poweroff") == 0)
+      return;
+    juce::MessageManager::callAsync([weak] {
+      if (auto* self = weak.get()) {
+        self->state.shuttingDown = false;
+        self->state.notify("Power off not allowed (see README)", 4000);
+      }
+    });
+  }).detach();
+}
+
+// The block under the cursor, or the block page's block, steps through
+// its tone's models; each pick loads once the encoder rests.
+void PanelUi::turnModelEncoder(int delta) {
+  std::string blockId;
+  const auto chain = state.getChain();
+  if (state.currentPage() == Page::Block) {
+    blockId = state.getPageBlock();
+  } else if (state.currentPage() == Page::Overview && !state.moving.load()) {
+    const auto list = targets();
+    const int selected = state.selected.load();
+    const auto tones = chain.tones();
+    if (juce::isPositiveAndBelow(selected, static_cast<int>(list.size()))) {
+      const auto target = list[static_cast<size_t>(selected)];
+      if (target.kind == TargetKind::Block && juce::isPositiveAndBelow(target.index, static_cast<int>(tones.size())))
+        blockId = tones[static_cast<size_t>(target.index)]->id;
+    }
+  }
+  const auto* cell = chain.find(blockId);
+  if (cell == nullptr) {
+    state.notify("Select a block to change its model");
+    return;
+  }
+  if (cell->models.size() < 2) {
+    state.notify("This tone has one model");
+    return;
+  }
+  // A new block, or nothing picked yet: start from the playing model.
+  if (state.getPageBlock() != blockId || state.pendingModel.load() < 0) {
+    state.setPageBlock(blockId);
+    int index = 0;
+    for (size_t i = 0; i < cell->models.size(); ++i)
+      if (cell->models[i].id == cell->activeModel)
+        index = static_cast<int>(i);
+    state.pendingModel = index;
+    appliedModel = cell->activeModel;
+  }
+  state.pendingModel = juce::jlimit(0, static_cast<int>(cell->models.size()) - 1, state.pendingModel.load() + delta);
+  const int request = ++modelRequest;
+  juce::Timer::callAfterDelay(kPresetLoadDelayMs, [weak = juce::WeakReference<PanelUi>(this), request] {
+    if (auto* self = weak.get(); self != nullptr && request == self->modelRequest && !self->state.editing.load())
+      self->applyModel(true);
+  });
 }
 
 void PanelUi::turnEditing(const Target& target, int delta, int step) {
@@ -507,6 +674,8 @@ void PanelUi::savePreset() {
   }
   presets[static_cast<size_t>(presetIndex)].id = saved["id"].toString();
   state.presetSaved = true;
+  presetFolder.resync();  // our own save is no change from outside
+  state.notify("Saved");
   std::cout << "Preset saved: " << name << std::endl;
 }
 

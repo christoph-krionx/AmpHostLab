@@ -11,6 +11,15 @@
 //
 // The block page can also move its block: back on the grid the block then
 // follows the turns through its row until a press puts it down.
+//
+// Model encoder: steps through the models of the block under the cursor
+// (or of the block page's block), for tones that carry several models.
+// A long press on the preset name discards unsaved changes; the settings
+// page can power the device off.
+//
+// Presets dropped into the preset folder (or reordered there) show up in
+// the list without a restart; a replaced file of the preset that is playing
+// is loaded again, unless the sound has unsaved changes on the device.
 
 #pragma once
 
@@ -21,6 +30,7 @@
 
 #include "UiState.h"
 #include "input/InputEvent.h"
+#include "ui/PresetFolderWatcher.h"
 
 class TONE3000Processor;
 
@@ -38,6 +48,12 @@ public:
 
   /** Message thread only. */
   void handle(const InputEvent& event);
+
+  /** Switches the tuner on or off from outside the panel (a MIDI control). */
+  void toggleTuner();
+
+  /** Another preset became active without the panel (MIDI): follow it. */
+  void presetChangedElsewhere(const juce::String& presetId);
 
   /** Called on the message thread with the name of each preset loaded. */
   std::function<void(const juce::String&)> onPresetLoaded;
@@ -74,6 +90,9 @@ private:
   void toggleBlock(int toneIndex);
   void setBlockSwitch(const char* name, bool on);
   void stepInputMode(int delta);
+  void turnModelEncoder(int delta);
+  void discardChanges();
+  void powerOff();
   void stepModel(int delta);
   void applyModel(bool finished);
   void startMove();
@@ -81,6 +100,8 @@ private:
   void endMove();
   void removeBlock();
 
+  void readPresets();
+  void presetFolderChanged(const juce::StringArray& changedIds);
   void stepPreset(int delta);
   void loadPendingPreset();
   void savePreset();
@@ -95,6 +116,7 @@ private:
   int returnSelected{0};  // overview cursor to come back to from a page
   int modelRequest{0};    // counts model picks; only the latest one loads
   int appliedModel{-1};   // model id last sent while picking
+  PresetFolderWatcher presetFolder{[this](const juce::StringArray& ids) { presetFolderChanged(ids); }};
 
   JUCE_DECLARE_WEAK_REFERENCEABLE(PanelUi)
 };

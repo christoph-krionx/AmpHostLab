@@ -54,7 +54,7 @@ struct KnobDef {
 // A line on a page's stage. A parameter entry is a switch (bool, a press
 // flips it) or a choice (a press edits it, turning picks); the block page
 // has entries of its own.
-enum class EntryKind { Param, BlockOn, BlockNormalize, BlockModel, BlockMove, BlockRemove, InputMode };
+enum class EntryKind { Param, BlockOn, BlockNormalize, BlockModel, BlockMove, BlockRemove, InputMode, PowerOff };
 struct EntryDef {
   const char* label;
   const char* paramId;
@@ -104,7 +104,7 @@ inline const PageDef& pageDef(Page page) {
         {"MIX", "Mix", "mix", Format::Percent, 1.0f, 0.0f, true, 1.0f}}},
       // Settings: the machine, not the sound; below the entries the stage
       // shows network, load and version.
-      {"Settings", nullptr, {{"Input", nullptr, EntryKind::InputMode}}, {}},
+      {"Settings", nullptr, {{"Input", nullptr, EntryKind::InputMode}, {"Power off", nullptr, EntryKind::PowerOff}}, {}},
   };
   return pages[static_cast<int>(page)];
 }

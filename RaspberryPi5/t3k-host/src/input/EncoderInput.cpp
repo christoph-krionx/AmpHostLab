@@ -20,11 +20,17 @@ EncoderInput::~EncoderInput() {
   stopThread(1000);
 }
 
-juce::String EncoderInput::start(const EncoderPins& nav) {
-  if (!reader.open({nav}))
-    return reader.error();
+juce::String EncoderInput::start(const EncoderPins& nav, const EncoderPins* model) {
+  std::vector<EncoderPins> pins{nav};
   sources = {InputEvent::Source::Nav};
   indices = {0};
+  if (model != nullptr) {
+    pins.push_back(*model);
+    sources.push_back(InputEvent::Source::Model);
+    indices.push_back(0);
+  }
+  if (!reader.open(pins))
+    return reader.error();
   weakSelf = this;
   startThread(juce::Thread::Priority::normal);
   return {};

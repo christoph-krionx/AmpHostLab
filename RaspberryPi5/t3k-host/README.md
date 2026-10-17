@@ -42,7 +42,13 @@ t3k-host --device Scarlett --block 64 --tone ~/tones/my-amp.nam
 | `--lcd <panel>` | SPI display: `none` (default), `ili9341`, `st7789` |
 | `--lcd-rotation <0..3>` | Quarter turns, default 1 (landscape) |
 | `--lcd-speed <hz>` | SPI clock, default 16000000 |
+| `--lcd-backlight <gpio>` | Backlight switched by this GPIO (e.g. `13`): on with the first picture, off when the host ends, so the panel stays dark while it is not running |
 | `--encoder <a,b,sw>` | Front-panel encoder on these BCM GPIOs, e.g. `5,6,26` |
+| `--model-encoder <a,b,sw>` | Encoder that steps the selected block's models, e.g. `18,19,20` |
+| `--midi-input <text>` | MIDI input whose name contains `<text>`, e.g. `Scarlett` (see MIDI) |
+| `--midi-channel <n>` | MIDI channel 1-16, `0` = all (default) |
+| `--midi-tuner-cc <n>` | CC number that switches the tuner on and off |
+| `--midi-cc <cc>:<target>` | Map a CC to a processor target, repeatable (see MIDI) |
 | `--preview <png>` | Draw the main screen into a 320x240 PNG and exit, no audio |
 | `--preview-cursor <n>` / `--preview-edit` / `--preview-page <name>` | Cursor position, edit mode and page (`overview`, `gate`, `pitch`, `spread`, `block`, `settings`) in the preview |
 
@@ -102,13 +108,34 @@ The gate, pitch and spread pages list their switches on the stage and put their 
 
 A block's page has the block's input, output and mix in the knob row, and on the stage: the block on or off, normalize, the model (for a local tone with several models a press starts picking; the model loads while turning, once the encoder rests), and move and remove. Move goes back to the grid with the block framed in blue: turning moves it one place along its row (empty slots count as places), a press puts it down. Remove asks once: a second press removes the block, turning keeps it. Until the value encoders are fitted, the navigation encoder's cursor also walks through the knob slots. Value encoders will work the slot above them directly: a short press toggles fine steps, a long press resets the knob.
 
-A star next to the preset name marks unsaved changes; the save button writes the current sound back to the loaded preset. The tuner takes the grid's place while its item is entered. The context line describes whatever the cursor is on; on the settings button it shows the CPU load, the CPU temperature and the dropouts.
+A star next to the preset name marks unsaved changes; the save button writes the current sound back to the loaded preset, and a long press on the preset name discards the changes (the preset loads again as saved). The tuner takes the grid's place while its item is entered. The context line describes whatever the cursor is on (on a block with several models, which one plays, e.g. `3/10  Plexi: Gain 3`; on the settings button the CPU load, the CPU temperature and the dropouts) and shows short messages such as "Saved" or "Presets updated" for a moment.
 
-A press on the settings button opens the settings page: the input mode (left, right, stereo, dual mono) switches while turning and is written to the settings file when editing ends; below it the page shows the network address, CPU load, dropouts, sample rate and buffer, and the version. A long press goes back.
+A press on the settings button opens the settings page: the input mode (left, right, stereo, dual mono) switches while turning and is written to the settings file when editing ends; power off asks once and then shuts the system down, showing when it is safe to unplug; below them the page shows the network address, CPU load, dropouts, sample rate and buffer, and the version. A long press goes back. Power off needs the host's user to run `systemctl poweroff` without a password:
+
+```bash
+echo 'pi ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff' | sudo tee /etc/sudoers.d/t3k-host-poweroff
+sudo chmod 440 /etc/sudoers.d/t3k-host-poweroff
+```
+
+The optional model encoder (`--model-encoder`, e.g. on GPIO 18/19/20 while I2S is unused) steps through the models of the block under the cursor, or of the open block page's block: quick comparisons of a capture pack's gain stages, for example. The model loads once the encoder rests. Only tones that carry several models can switch: a folder loaded as a local tone in the plugin and saved into a preset. A catalog tone stores only its active model. Note: a preset made on another computer embeds only the models that were actually loaded there; the others refer to that computer's model stash and fail to load on the device.
 
 `--preview <png> --preview-page gate --preview-cursor 1` draws a page into a PNG without audio, to check the layout.
 
 Presets are the plugin's `.t3kpreset` files in `~/.config/TONE3000/Presets/` (factory presets in `Presets/Factory/`). The chain is drawn as the plugin's grid: one row in mono, two in stereo, at least five slots wide.
+
+Presets copied into that folder (for example through a network share) appear in the list within about two seconds, without a restart; the host waits until the folder has stopped changing, so a file still being copied is not read. The list follows the plugin's order: the presets named in `order.json` first (copy it from the plugin's preset folder to keep its order and numbers), then the rest alphabetically by file name. The name shown is the one stored in the file. When the file of the preset that is playing is replaced, the host loads it again, unless the sound has unsaved changes on the device.
+
+A Samba share of the preset folder (and of a tone folder) for Windows, macOS and Linux, in `/etc/samba/smb.conf`:
+
+```text
+[Presets]
+   path = /home/pi/.config/TONE3000/Presets
+   valid users = pi
+   force user = pi
+   read only = no
+```
+
+with `sudo smbpasswd -a pi` for the password; on Windows connect as `NAMHOST02\pi` to `\\namhost02.local\Presets`.
 
 The encoder is read through GPIO edge events with the Pi's internal pull-ups, so it only needs wires to the pins and GND:
 
@@ -122,6 +149,25 @@ The encoder is read through GPIO edge events with the Pi's internal pull-ups, so
 Encoder modules with on-board pull-up resistors need those removed (or their `+` pin on 3.3 V); with `+` left open the resistors couple the three signals together.
 
 `build/enc-test` prints every detent and button event to check the wiring.
+
+## MIDI
+
+A MIDI controller on the audio interface's MIDI input (`midi-input = Scarlett`) drives the processor's own MIDI mapper:
+
+- Program change n loads the (n+1)th preset of the list, the number shown in front of the preset name minus one.
+- `midi-cc = <cc>:<target>` maps a CC, one line per mapping. Targets: `presetNext`, `presetPrevious`, `block1Power`, `block2Power`, ... (tone blocks by position), `stereoEnabled`, or any parameter id (`gateEnabled`, `pitchEnabled`, `spreadEnabled`, `toneBass`, `outputLevel`, ... see `--list-params`). Switch targets toggle once per press; continuous parameters follow the CC value.
+- `midi-tuner-cc` switches the tuner, which is no processor parameter; the screen goes to the overview with the tuner showing.
+
+The screen follows presets loaded over MIDI (number, name, and the preset remembered for the next start).
+
+```text
+midi-input = Scarlett
+midi-channel = 0
+midi-tuner-cc = 64
+midi-cc = 65:presetPrevious
+midi-cc = 66:presetNext
+midi-cc = 67:block1Power
+```
 
 ## Realtime permissions
 

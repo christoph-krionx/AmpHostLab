@@ -17,8 +17,13 @@ class ChainWatcher : private juce::Timer {
 public:
   ChainWatcher(TONE3000Processor& p, UiState& s) : processor(p), state(s) {
     timerCallback();
+    reportedPresetId = presetId;
     startTimer(40);
   }
+
+  /** Called on the message thread whenever a different preset is active,
+      whoever loaded it (the panel, a MIDI program change, ...). */
+  std::function<void(const juce::String& presetId)> onPresetChanged;
 
 private:
   // The plugin's gear id; without one, the file format decides.
@@ -80,6 +85,11 @@ private:
       return;
     revision = static_cast<int>(chain["revision"]);
     presetId = chain["preset"]["id"].toString();
+    if (presetId.isNotEmpty() && presetId != reportedPresetId) {
+      reportedPresetId = presetId;
+      if (onPresetChanged)
+        onPresetChanged(presetId);
+    }
 
     ChainView view;
     view.stereo = static_cast<bool>(chain["stereoEnabled"]);
@@ -147,6 +157,7 @@ private:
   UiState& state;
   int revision{-1};
   juce::String presetId;
+  juce::String reportedPresetId;
   juce::String chainPrint;
   juce::String baseline;
   juce::String baselinePresetId;

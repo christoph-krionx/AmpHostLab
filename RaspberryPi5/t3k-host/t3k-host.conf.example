@@ -10,12 +10,21 @@ input-mode = left
 
 # Front panel
 lcd = ili9341
+# Backlight on a GPIO instead of 3.3 V: dark while the host is not running
+# lcd-backlight = 13
 encoder = 5,6,26
+# Optional: steps the selected block's models
+# model-encoder = 18,19,20
 
 # Sound at start: a preset, or a local tone when no preset is set.
 # The host updates the preset line whenever another preset is loaded.
 tone = ~/tones/Boosted-6505+-A2-Chugs-FullRig.nam
 preset =
+
+# MIDI controller on the interface's MIDI input (see README, MIDI)
+# midi-input = Scarlett
+# midi-tuner-cc = 64
+# midi-cc = 66:presetNext
 
 # CPU/xrun report in the log every n seconds, 0 = off
 status = 0

@@ -7,7 +7,8 @@
 namespace t3k {
 
 struct InputEvent {
-  enum class Source { Nav, Value, Footswitch };
+  // Model: steps through the models of the selected block's tone.
+  enum class Source { Nav, Value, Model, Footswitch };
   enum class Kind { Turn, Press, LongPress };
 
   Source source;

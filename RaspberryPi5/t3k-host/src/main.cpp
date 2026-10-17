@@ -11,6 +11,7 @@
 #include <csignal>
 #include <cstring>
 #include <iostream>
+#include <alsa/asoundlib.h>
 #include <sys/mman.h>
 
 #include "ChainWatcher.h"
@@ -19,6 +20,7 @@
 #include "Processor.h"
 #include "display/DisplayUi.h"
 #include "input/EncoderInput.h"
+#include "input/MidiControl.h"
 #include "ui/PanelUi.h"
 
 namespace {
@@ -41,7 +43,13 @@ struct Options {
   juce::String lcd{"none"};  // none | ili9341 | st7789
   int lcdRotation{1};
   int lcdSpeed{16000000};
+  int lcdBacklight{-1};  // backlight GPIO, -1 = wired to 3.3 V
   juce::String encoder;   // "a,b,sw" BCM GPIO numbers, empty = no encoder
+  juce::String modelEncoder;  // the same for the model encoder
+  juce::String midiInput;     // MIDI input whose name contains this, empty = none
+  int midiChannel{0};         // 0 = all channels
+  int midiTunerCc{-1};        // CC that switches the tuner, -1 = none
+  juce::StringArray midiCcs;  // "cc:target" mappings for the processor
   juce::StringArray sets;  // "paramId=value", in the parameter's own units
   juce::String config;  // start settings file; empty = the default one
   bool noConfig{false};
@@ -75,9 +83,15 @@ void printUsage() {
                "  --preview-edit        show the cursor in edit mode\n"
                "  --preview-page <name> page in the preview: overview | gate | pitch | spread | block | settings\n"
                "  --encoder <a,b,sw>    front-panel encoder on these GPIOs (e.g. 5,6,26)\n"
+               "  --model-encoder <a,b,sw> encoder that steps the selected block's models (e.g. 18,19,20)\n"
+               "  --midi-input <text>   MIDI input whose name contains <text> (program changes, CCs)\n"
+               "  --midi-channel <n>    MIDI channel 1-16, 0 = all (default)\n"
+               "  --midi-tuner-cc <n>   CC number that switches the tuner on and off\n"
+               "  --midi-cc <cc>:<target> map a CC to a parameter id, blockNPower, presetNext, presetPrevious; repeatable\n"
                "  --lcd <panel>        SPI display: none | ili9341 | st7789 (default none)\n"
                "  --lcd-rotation <0..3> quarter turns (default 1, landscape)\n"
-               "  --lcd-speed <hz>      SPI clock (default 16000000)\n";
+               "  --lcd-speed <hz>      SPI clock (default 16000000)\n"
+               "  --lcd-backlight <gpio> backlight switched by this GPIO (dark while the host is not running)\n";
 }
 
 bool parseArgs(const juce::StringArray& args, Options& o) {
@@ -103,9 +117,15 @@ bool parseArgs(const juce::StringArray& args, Options& o) {
     else if (a == "--preview-edit") o.previewEdit = true;
     else if (a == "--preview-page") o.previewPage = value();
     else if (a == "--encoder") o.encoder = value();
+    else if (a == "--model-encoder") o.modelEncoder = value();
+    else if (a == "--midi-input") o.midiInput = value();
+    else if (a == "--midi-channel") o.midiChannel = value().getIntValue();
+    else if (a == "--midi-tuner-cc") o.midiTunerCc = value().getIntValue();
+    else if (a == "--midi-cc") o.midiCcs.add(value());
     else if (a == "--lcd") o.lcd = value();
     else if (a == "--lcd-rotation") o.lcdRotation = value().getIntValue();
     else if (a == "--lcd-speed") o.lcdSpeed = value().getIntValue();
+    else if (a == "--lcd-backlight") o.lcdBacklight = value().getIntValue();
     else return false;
   }
   return true;
@@ -304,6 +324,7 @@ int main(int argc, char** argv) {
     lcd.panel = opt.lcd == "st7789" ? t3k::LcdPanel::St7789 : t3k::LcdPanel::Ili9341;
     lcd.rotation = opt.lcdRotation;
     lcd.spiHz = static_cast<uint32_t>(opt.lcdSpeed);
+    lcd.backlightPin = opt.lcdBacklight;
     display = std::make_unique<t3k::DisplayUi>(processor, deviceManager, uiState);
     const auto lcdError = display->start(lcd);
     if (lcdError.isNotEmpty()) {
@@ -338,7 +359,18 @@ int main(int argc, char** argv) {
       announced = true;
     }
     juce::Thread::sleep(500);
-    alsa->scanForDevices();
+    // JUCE's ALSA type lists the devices only on its first scan, so a card
+    // that appears later needs a fresh one (on a fresh alsa-lib
+    // configuration), which then replaces the device manager's.
+    snd_config_update_free_global();
+    std::unique_ptr<juce::AudioIODeviceType> fresh(juce::AudioIODeviceType::createAudioIODeviceType_ALSA());
+    fresh->scanForDevices();
+    if (findDevice(fresh->getDeviceNames(true), opt.device).isNotEmpty() &&
+        findDevice(fresh->getDeviceNames(false), opt.device).isNotEmpty()) {
+      deviceManager.removeAudioDeviceType(alsa);
+      alsa = fresh.get();
+      deviceManager.addAudioDeviceType(std::move(fresh));
+    }
   }
   if (display != nullptr)
     display->setStatus("starting");
@@ -428,15 +460,55 @@ int main(int argc, char** argv) {
       if (panel != nullptr)
         panel->handle(event);
     });
-    const auto pins = juce::StringArray::fromTokens(opt.encoder, ",", "");
-    const auto encoderError =
-        pins.size() == 3 ? encoder->start({pins[0].getIntValue(), pins[1].getIntValue(), pins[2].getIntValue()})
-                         : juce::String("expected --encoder a,b,sw");
+    const auto pinsOf = [](const juce::String& text, t3k::EncoderPins& out) {
+      const auto pins = juce::StringArray::fromTokens(text, ",", "");
+      out = {pins[0].getIntValue(), pins[1].getIntValue(), pins[2].getIntValue()};
+      return pins.size() == 3;
+    };
+    t3k::EncoderPins nav{}, model{};
+    const bool haveModel = opt.modelEncoder.isNotEmpty();
+    juce::String encoderError;
+    if (!pinsOf(opt.encoder, nav))
+      encoderError = "expected --encoder a,b,sw";
+    else if (haveModel && !pinsOf(opt.modelEncoder, model))
+      encoderError = "expected --model-encoder a,b,sw";
+    else
+      encoderError = encoder->start(nav, haveModel ? &model : nullptr);
     if (encoderError.isNotEmpty()) {
       std::cerr << "Encoder not available: " << encoderError << std::endl;
       encoder.reset();
       panel.reset();
     }
+  }
+
+  // The display follows presets that MIDI loads.
+  chainWatcher.onPresetChanged = [&panel](const juce::String& presetId) {
+    if (panel != nullptr)
+      panel->presetChangedElsewhere(presetId);
+  };
+
+  // MIDI: program changes and the CC mappings go to the processor, the
+  // tuner CC to the panel.
+  std::unique_ptr<t3k::MidiControl> midi;
+  if (opt.midiInput.isNotEmpty()) {
+    processor.midiMapper.setChannelFilter(juce::jlimit(0, 16, opt.midiChannel));
+    for (const auto& entry : opt.midiCcs) {
+      const int cc = entry.upToFirstOccurrenceOf(":", false, false).trim().getIntValue();
+      const auto target = entry.fromFirstOccurrenceOf(":", false, false).trim();
+      if (!entry.contains(":") || !processor.midiMapper.setCcMapping(target, cc))
+        std::cerr << "MIDI mapping not set: " << entry << std::endl;
+    }
+    midi = std::make_unique<t3k::MidiControl>(deviceManager, player, [&panel, &uiState] {
+      if (panel != nullptr)
+        panel->toggleTuner();
+      else
+        uiState.tunerOn = !uiState.tunerOn.load();
+    });
+    const auto name = midi->start(opt.midiInput, opt.midiChannel, opt.midiTunerCc);
+    if (name.isEmpty())
+      std::cerr << "No MIDI input matching \"" << opt.midiInput << "\"" << std::endl;
+    else
+      std::cout << "MIDI input: " << name << std::endl;
   }
 
   if (display != nullptr)
@@ -447,6 +519,7 @@ int main(int argc, char** argv) {
     juce::MessageManager::getInstance()->runDispatchLoop();
   }
 
+  midi.reset();
   encoder.reset();
   panel.reset();
   display.reset();

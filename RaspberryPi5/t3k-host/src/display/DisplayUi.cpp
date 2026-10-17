@@ -71,6 +71,10 @@ const juce::Image& DisplayUi::glyphFor(const juce::String& gear) const {
 
 DisplayUi::~DisplayUi() {
   stopThread(1000);
+  // Dark while the host is not running; when the system shuts down, the
+  // message about unplugging stays lit instead.
+  if (!state.shuttingDown.load())
+    lcd.setBacklight(false);
 }
 
 juce::String DisplayUi::start(const LcdConfig& config) {
@@ -154,6 +158,17 @@ void DisplayUi::drawSplash(juce::Graphics& g) const {
 
 void DisplayUi::drawMain(juce::Graphics& g) {
   const int w = frameW;
+  if (state.shuttingDown.load()) {
+    const auto area = juce::Rectangle<int>(frameW, frameH);
+    g.setColour(kText);
+    g.setFont(font(24.0f, true));
+    g.drawText("Shutting down", area.withTrimmedBottom(40), juce::Justification::centred);
+    g.setColour(kDim);
+    g.setFont(font(14.0f));
+    g.drawText("Unplug when the LED stops blinking", area.withTrimmedTop(area.getHeight() / 2 + 10),
+               juce::Justification::centredTop);
+    return;
+  }
   const auto levels = processor.getMeterLevels();
   auto& params = processor.getParameters();
   const auto param = [&params](const char* id) {
@@ -393,7 +408,11 @@ void DisplayUi::drawMain(juce::Graphics& g) {
     g.setColour(kText);
     g.setFont(font(15.0f, true));
     const juce::String pageTitle = page == Page::Block ? (pageCell != nullptr ? pageCell->name : juce::String()) : def.title;
-    g.drawText(pageTitle, stage.withHeight(17).withTrimmedLeft(6), juce::Justification::centredLeft, true);
+    // The settings page goes without its title (the framed button says
+    // where you are), so its information fits below the entries.
+    const int entriesTop = page == Page::Settings ? 2 : 19;
+    if (page != Page::Settings)
+      g.drawText(pageTitle, stage.withHeight(17).withTrimmedLeft(6), juce::Justification::centredLeft, true);
     const int rowH = 15;
     const auto choiceText = [](const juce::String& text) {
       return juce::String::fromUTF8("\xe2\x80\xb9 ") + text + juce::String::fromUTF8(" \xe2\x80\xba");
@@ -402,7 +421,7 @@ void DisplayUi::drawMain(juce::Graphics& g) {
     int line = 0;
     for (int i = 0; i < static_cast<int>(def.entries.size()); ++i) {
       const auto& entry = def.entries[static_cast<size_t>(i)];
-      auto row = juce::Rectangle<int>(stage.getX(), stage.getY() + 19 + line * (rowH + 1), stage.getWidth(), rowH);
+      auto row = juce::Rectangle<int>(stage.getX(), stage.getY() + entriesTop + line * (rowH + 1), stage.getWidth(), rowH);
 
       // Move and remove: two buttons on one line.
       if (entry.kind == EntryKind::BlockMove || entry.kind == EntryKind::BlockRemove) {
@@ -454,12 +473,19 @@ void DisplayUi::drawMain(juce::Graphics& g) {
         case EntryKind::InputMode:
           value = choiceText(inputModeName(static_cast<int>(processor.getInputMode())));
           break;
+        case EntryKind::PowerOff:
+          if (state.powerArmed.load()) {
+            value = "Press again";
+            lit = true;
+          }
+          break;
         case EntryKind::BlockMove:
         case EntryKind::BlockRemove: break;
       }
-      g.setColour(kText);
+      const bool armedOff = entry.kind == EntryKind::PowerOff && state.powerArmed.load();
+      g.setColour(armedOff ? kWarn : kText);
       g.drawText(entry.label, row.withTrimmedLeft(8), juce::Justification::centredLeft, true);
-      g.setColour(lit ? kAccent : kDim);
+      g.setColour(armedOff ? kWarn : lit ? kAccent : kDim);
       g.drawText(value, row.withTrimmedRight(8).withTrimmedLeft(90), juce::Justification::centredRight, true);
     }
 
@@ -486,7 +512,7 @@ void DisplayUi::drawMain(juce::Graphics& g) {
       };
       g.setFont(font(12.0f));
       g.setColour(kDim);
-      const int infoTop = stage.getY() + 19 + static_cast<int>(def.entries.size()) * (rowH + 1) + 4;
+      const int infoTop = stage.getY() + entriesTop + static_cast<int>(def.entries.size()) * (rowH + 1) + 4;
       for (int i = 0; i < 3; ++i)
         g.drawText(info[i], stage.getX() + 8, infoTop + i * 15, stage.getWidth() - 16, 15,
                    juce::Justification::centredLeft, true);
@@ -632,6 +658,8 @@ void DisplayUi::drawMain(juce::Graphics& g) {
             const int count = state.presetCount.load();
             context = index >= 0 ? "Preset " + juce::String(index + 1) + " of " + juce::String(count)
                                  : juce::String(count) + " presets";
+            if (dirty)
+              context << "  -  hold to discard changes";
             break;
           }
         }
@@ -642,8 +670,24 @@ void DisplayUi::drawMain(juce::Graphics& g) {
         break;
       }
       case TargetKind::Block:
-        if (juce::isPositiveAndBelow(target.index, static_cast<int>(tones.size())))
-          context = tones[static_cast<size_t>(target.index)]->name + "  -  hold for details";
+        if (juce::isPositiveAndBelow(target.index, static_cast<int>(tones.size()))) {
+          // With several models, which one plays (or is being picked).
+          const auto& cell = *tones[static_cast<size_t>(target.index)];
+          context = cell.name;
+          if (cell.models.size() > 1) {
+            const int pending = state.pendingModel.load();
+            int shown = 0;
+            for (size_t m = 0; m < cell.models.size(); ++m)
+              if (pending >= 0 && pageBlockId == cell.id ? static_cast<int>(m) == pending
+                                                         : cell.models[m].id == cell.activeModel)
+                shown = static_cast<int>(m);
+            // The position first: it stays readable when a long name is cut.
+            context = juce::String(shown + 1) + "/" + juce::String(static_cast<int>(cell.models.size())) + "  " +
+                      cell.name + ": " + cell.models[static_cast<size_t>(shown)].name;
+          } else {
+            context << "  -  hold for details";
+          }
+        }
         break;
       case TargetKind::Entry: {
         const auto& entry = def.entries[static_cast<size_t>(target.index)];
@@ -659,6 +703,9 @@ void DisplayUi::drawMain(juce::Graphics& g) {
                                              : juce::String("Remove the block from the chain");
         else if (entry.kind == EntryKind::BlockModel && (pageCell == nullptr || pageCell->models.size() < 2))
           context = "This tone has one model";
+        else if (entry.kind == EntryKind::PowerOff)
+          context = state.powerArmed.load() ? juce::String("Press again to power off, turn to keep")
+                                            : juce::String("Shut down before unplugging");
         else
           context = juce::String(entry.label) + (choice ? "  -  press to change" : "  -  press to switch") +
                     ", hold to go back";
@@ -673,6 +720,9 @@ void DisplayUi::drawMain(juce::Graphics& g) {
   }
   if (moving && pageCell != nullptr)
     context = "Moving " + pageCell->name + "  -  press to put down";
+  // A short message wins over all of it for a moment.
+  if (const auto notice = state.getNotice(); notice.isNotEmpty())
+    context = notice;
   g.setColour(kText);
   g.setFont(font(12.0f));
   g.drawText(context, stageLeft, contextTop, w - 2 * stageLeft, contextH, juce::Justification::centred, true);
