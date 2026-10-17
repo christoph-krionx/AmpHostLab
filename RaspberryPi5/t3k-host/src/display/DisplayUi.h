@@ -17,6 +17,11 @@ class TONE3000Processor;
 
 namespace t3k {
 
+/** The screen's typeface (empty = the system default) and its one accent
+    colour, which marks the cursor and what changes while turning. Set
+    before the display starts. */
+void setDisplayLook(const juce::String& typeface, juce::Colour accent);
+
 class DisplayUi : private juce::Thread {
 public:
   DisplayUi(TONE3000Processor& processor, juce::AudioDeviceManager& deviceManager, const UiState& state);
@@ -37,12 +42,13 @@ public:
 
   /** Draws the main screen into an image instead of onto the panel, for
       previews. Does not need start(). */
-  juce::Image renderPreview(int width, int height);
+  juce::Image renderPreview(int width, int height, bool splash = false);
 
 private:
   void run() override;
   void drawSplash(juce::Graphics& g) const;
   void drawMain(juce::Graphics& g);
+  void drawIdle(juce::Graphics& g);
   void present(const juce::Image& frame);
   const juce::Image& glyphFor(const juce::String& gear) const;
 

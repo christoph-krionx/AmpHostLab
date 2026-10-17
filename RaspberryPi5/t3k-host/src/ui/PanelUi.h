@@ -12,8 +12,9 @@
 // The block page can also move its block: back on the grid the block then
 // follows the turns through its row until a press puts it down.
 //
-// Model encoder: steps through the models of the block under the cursor
-// (or of the block page's block), for tones that carry several models.
+// Second encoder: the preset's volume, like an amp's master knob (it acts
+// at once, even out of the idle view); or, as role "models", steps through
+// the models of the block under the cursor (or of the block page's block).
 // A long press on the preset name discards unsaved changes; the settings
 // page can power the device off.
 //
@@ -51,6 +52,9 @@ public:
 
   /** Switches the tuner on or off from outside the panel (a MIDI control). */
   void toggleTuner();
+
+  /** What the second encoder does: the volume (default) or the models. */
+  void setSecondEncoderStepsModels(bool models) { secondEncoderModels = models; }
 
   /** Another preset became active without the panel (MIDI): follow it. */
   void presetChangedElsewhere(const juce::String& presetId);
@@ -91,6 +95,7 @@ private:
   void setBlockSwitch(const char* name, bool on);
   void stepInputMode(int delta);
   void turnModelEncoder(int delta);
+  void turnVolume(int delta, int step);
   void discardChanges();
   void powerOff();
   void stepModel(int delta);
@@ -116,6 +121,7 @@ private:
   int returnSelected{0};  // overview cursor to come back to from a page
   int modelRequest{0};    // counts model picks; only the latest one loads
   int appliedModel{-1};   // model id last sent while picking
+  bool secondEncoderModels{false};
   PresetFolderWatcher presetFolder{[this](const juce::StringArray& ids) { presetFolderChanged(ids); }};
 
   JUCE_DECLARE_WEAK_REFERENCEABLE(PanelUi)

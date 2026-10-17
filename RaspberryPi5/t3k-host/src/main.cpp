@@ -44,8 +44,12 @@ struct Options {
   int lcdRotation{1};
   int lcdSpeed{16000000};
   int lcdBacklight{-1};  // backlight GPIO, -1 = wired to 3.3 V
+  int idleView{10};      // seconds without input until the idle view, 0 = never
+  juce::String uiFont{"Barlow Condensed"};  // typeface of the screen, empty = system default
+  juce::String uiAccent{"amber"};  // amber | blue | #rrggbb
   juce::String encoder;   // "a,b,sw" BCM GPIO numbers, empty = no encoder
-  juce::String modelEncoder;  // the same for the model encoder
+  juce::String modelEncoder;  // the same for the second encoder
+  juce::String modelEncoderRole{"volume"};  // volume | models
   juce::String midiInput;     // MIDI input whose name contains this, empty = none
   int midiChannel{0};         // 0 = all channels
   int midiTunerCc{-1};        // CC that switches the tuner, -1 = none
@@ -81,9 +85,10 @@ void printUsage() {
                "  --preview <png>       draw the screen into a PNG (320x240) and exit, no audio\n"
                "  --preview-cursor <n>  cursor position in the preview (default: no cursor)\n"
                "  --preview-edit        show the cursor in edit mode\n"
-               "  --preview-page <name> page in the preview: overview | gate | pitch | spread | block | settings\n"
+               "  --preview-page <name> page in the preview: overview | gate | pitch | spread | block | settings | idle | splash\n"
                "  --encoder <a,b,sw>    front-panel encoder on these GPIOs (e.g. 5,6,26)\n"
-               "  --model-encoder <a,b,sw> encoder that steps the selected block's models (e.g. 18,19,20)\n"
+               "  --model-encoder <a,b,sw> second encoder (e.g. 18,19,20)\n"
+               "  --model-encoder-role <r> what it does: volume (default) | models\n"
                "  --midi-input <text>   MIDI input whose name contains <text> (program changes, CCs)\n"
                "  --midi-channel <n>    MIDI channel 1-16, 0 = all (default)\n"
                "  --midi-tuner-cc <n>   CC number that switches the tuner on and off\n"
@@ -91,7 +96,10 @@ void printUsage() {
                "  --lcd <panel>        SPI display: none | ili9341 | st7789 (default none)\n"
                "  --lcd-rotation <0..3> quarter turns (default 1, landscape)\n"
                "  --lcd-speed <hz>      SPI clock (default 16000000)\n"
-               "  --lcd-backlight <gpio> backlight switched by this GPIO (dark while the host is not running)\n";
+               "  --lcd-backlight <gpio> backlight switched by this GPIO (dark while the host is not running)\n"
+               "  --idle-view <s>       show only the preset after this many seconds without input, 0 = never (default 10)\n"
+               "  --ui-font <name>      typeface of the screen, e.g. \"Space Grotesk\" (default: Barlow Condensed)\n"
+               "  --ui-accent <colour>  the screen's navigation colour: amber | blue | #rrggbb (default amber)\n";
 }
 
 bool parseArgs(const juce::StringArray& args, Options& o) {
@@ -118,6 +126,7 @@ bool parseArgs(const juce::StringArray& args, Options& o) {
     else if (a == "--preview-page") o.previewPage = value();
     else if (a == "--encoder") o.encoder = value();
     else if (a == "--model-encoder") o.modelEncoder = value();
+    else if (a == "--model-encoder-role") o.modelEncoderRole = value();
     else if (a == "--midi-input") o.midiInput = value();
     else if (a == "--midi-channel") o.midiChannel = value().getIntValue();
     else if (a == "--midi-tuner-cc") o.midiTunerCc = value().getIntValue();
@@ -126,9 +135,21 @@ bool parseArgs(const juce::StringArray& args, Options& o) {
     else if (a == "--lcd-rotation") o.lcdRotation = value().getIntValue();
     else if (a == "--lcd-speed") o.lcdSpeed = value().getIntValue();
     else if (a == "--lcd-backlight") o.lcdBacklight = value().getIntValue();
+    else if (a == "--idle-view") o.idleView = value().getIntValue();
+    else if (a == "--ui-font") o.uiFont = value();
+    else if (a == "--ui-accent") o.uiAccent = value();
     else return false;
   }
   return true;
+}
+
+// The screen's navigation colour by name or as #rrggbb.
+juce::Colour accentColour(const juce::String& text) {
+  if (text.equalsIgnoreCase("blue"))
+    return juce::Colour(0xff6fa3d6);
+  if (text.startsWith("#") && text.length() == 7)
+    return juce::Colour::fromString("ff" + text.substring(1));
+  return juce::Colour(0xffc8501e);  // amber: a tube's glow
 }
 
 juce::AudioIODeviceType* findAlsa(juce::AudioDeviceManager& dm) {
@@ -268,6 +289,7 @@ int main(int argc, char** argv) {
     processor.setPlayConfigDetails(2, 2, opt.sampleRate, opt.blockSize);
     processor.prepareToPlay(opt.sampleRate, opt.blockSize);
     t3k::UiState previewState;
+    t3k::setDisplayLook(opt.uiFont, accentColour(opt.uiAccent));
     t3k::DisplayUi previewUi(processor, deviceManager, previewState);
     if (opt.tone.isNotEmpty()) {
       const auto file = juce::File::getCurrentWorkingDirectory().getChildFile(opt.tone);
@@ -296,7 +318,10 @@ int main(int argc, char** argv) {
       previewState.active = opt.previewCursor >= 0;
       previewState.selected = juce::jmax(0, opt.previewCursor);
       previewState.editing = opt.previewEdit;
-      const auto frame = previewUi.renderPreview(320, 240);
+      // "idle": as if nobody had touched the controls for a minute.
+      previewState.lastInputMs = juce::Time::getMillisecondCounter() -
+                                 (opt.previewPage.equalsIgnoreCase("idle") ? 60000u : 0u);
+      const auto frame = previewUi.renderPreview(320, 240, opt.previewPage.equalsIgnoreCase("splash"));
       const juce::File out = juce::File::getCurrentWorkingDirectory().getChildFile(opt.preview);
       out.deleteFile();
       juce::FileOutputStream stream(out);
@@ -325,6 +350,7 @@ int main(int argc, char** argv) {
     lcd.rotation = opt.lcdRotation;
     lcd.spiHz = static_cast<uint32_t>(opt.lcdSpeed);
     lcd.backlightPin = opt.lcdBacklight;
+    t3k::setDisplayLook(opt.uiFont, accentColour(opt.uiAccent));
     display = std::make_unique<t3k::DisplayUi>(processor, deviceManager, uiState);
     const auto lcdError = display->start(lcd);
     if (lcdError.isNotEmpty()) {
@@ -444,8 +470,10 @@ int main(int argc, char** argv) {
   std::unique_ptr<t3k::PanelUi> panel;
   std::unique_ptr<t3k::EncoderInput> encoder;
   if (opt.encoder.isNotEmpty()) {
+    uiState.idleViewMs = static_cast<juce::uint32>(juce::jmax(0, opt.idleView)) * 1000;
     panel = std::make_unique<t3k::PanelUi>(processor, uiState, display.get());
     panel->setCurrentPreset(opt.preset);
+    panel->setSecondEncoderStepsModels(opt.modelEncoderRole.equalsIgnoreCase("models"));
     // The preset turned to last and the settings changed on the panel come
     // back on the next start.
     if (configFile.existsAsFile()) {

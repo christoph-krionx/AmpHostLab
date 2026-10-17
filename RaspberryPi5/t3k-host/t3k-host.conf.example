@@ -13,8 +13,15 @@ lcd = ili9341
 # Backlight on a GPIO instead of 3.3 V: dark while the host is not running
 # lcd-backlight = 13
 encoder = 5,6,26
-# Optional: steps the selected block's models
+# Look of the screen: typeface (installed font family) and navigation colour
+ui-font = Barlow Condensed
+ui-accent = amber
+
+# Seconds without input until the screen shows only the preset, 0 = never
+idle-view = 10
+# Optional second encoder: the preset's volume (or "models")
 # model-encoder = 18,19,20
+# model-encoder-role = volume
 
 # Sound at start: a preset, or a local tone when no preset is set.
 # The host updates the preset line whenever another preset is loaded.

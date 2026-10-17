@@ -42,15 +42,19 @@ t3k-host --device Scarlett --block 64 --tone ~/tones/my-amp.nam
 | `--lcd <panel>` | SPI display: `none` (default), `ili9341`, `st7789` |
 | `--lcd-rotation <0..3>` | Quarter turns, default 1 (landscape) |
 | `--lcd-speed <hz>` | SPI clock, default 16000000 |
+| `--ui-font <name>` | Typeface of the screen, an installed font family such as `Space Grotesk`, `Barlow` or `Barlow Condensed` (default `Barlow Condensed`; the system's typeface when it is not installed). Fonts go to `~/.local/share/fonts` |
+| `--ui-accent <colour>` | The screen's one colour, for the cursor and what is being edited: `amber` (default), `blue` or `#rrggbb` |
+| `--idle-view <s>` | Seconds without input until the screen shows only the preset, `0` = never (default 10) |
 | `--lcd-backlight <gpio>` | Backlight switched by this GPIO (e.g. `13`): on with the first picture, off when the host ends, so the panel stays dark while it is not running |
 | `--encoder <a,b,sw>` | Front-panel encoder on these BCM GPIOs, e.g. `5,6,26` |
-| `--model-encoder <a,b,sw>` | Encoder that steps the selected block's models, e.g. `18,19,20` |
+| `--model-encoder <a,b,sw>` | Second encoder, e.g. `18,19,20` |
+| `--model-encoder-role <r>` | What it does: `volume` (default, the preset's volume) or `models` (steps the selected block's models) |
 | `--midi-input <text>` | MIDI input whose name contains `<text>`, e.g. `Scarlett` (see MIDI) |
 | `--midi-channel <n>` | MIDI channel 1-16, `0` = all (default) |
 | `--midi-tuner-cc <n>` | CC number that switches the tuner on and off |
 | `--midi-cc <cc>:<target>` | Map a CC to a processor target, repeatable (see MIDI) |
 | `--preview <png>` | Draw the main screen into a 320x240 PNG and exit, no audio |
-| `--preview-cursor <n>` / `--preview-edit` / `--preview-page <name>` | Cursor position, edit mode and page (`overview`, `gate`, `pitch`, `spread`, `block`, `settings`) in the preview |
+| `--preview-cursor <n>` / `--preview-edit` / `--preview-page <name>` | Cursor position, edit mode and page (`overview`, `gate`, `pitch`, `spread`, `block`, `settings`, `idle`, `splash`) in the preview |
 
 ### Settings file
 
@@ -97,16 +101,18 @@ The screen text needs a font that fontconfig can find, for example DejaVu Sans i
 
 ## Encoder
 
-The screen has the same frame on every page: the preset name (large, with its place in the preset list in front) with the save, tuner and settings buttons, the effect switches (gate, pitch, spread), the stage between the input and output meters (with the level in dB underneath, its peak held for three seconds and red after clipping), a context line, and along the bottom edge five knob slots, one above each of the (planned) value encoders.
+The screen has the same frame on every page: the preset name (large, with its place in the preset list in front) with the save, tuner and settings buttons, the effect switches (gate, pitch, spread), the stage between the input and output meters (with the level in dB underneath, its peak held for three seconds and inverted after clipping), a context line, and along the bottom edge five knob slots, one above each of the (planned) value encoders. Everything that shows a state is greyscale; the one accent colour (`ui-accent`) marks only the cursor and what is being edited, and warnings are inverted.
 
 The navigation encoder with push button operates the device. Turning moves the cursor in screen order (wrapping around). On the overview: preset, save, tuner, settings, the effect switches, the blocks of the chain, then the knobs gain, bass, mid, treble and volume.
 
 - A short press switches what the cursor is on (a block, an effect, a switch on a page) or starts editing it (preset, knob, choice); turning then changes the value and another press ends editing. In the preset item turning steps through the presets.
 - A long press (600 ms, it fires while the button is still held) on an effect switch or a block opens its page in place of the grid; on a page it goes back. While a knob is being edited, a long press sets it to its default.
 
+After ten seconds without input (`idle-view`) the screen shows only the preset: its number above its name, nothing else. The first turn or press only brings the normal screen back, so nothing changes by accident in the dark; presets loaded over MIDI show up in the idle view directly. The tuner, an edit in progress or a pending confirmation keep the normal screen.
+
 The gate, pitch and spread pages list their switches on the stage and put their continuous parameters into the knob row; the gate page marks its threshold on the input meter.
 
-A block's page has the block's input, output and mix in the knob row, and on the stage: the block on or off, normalize, the model (for a local tone with several models a press starts picking; the model loads while turning, once the encoder rests), and move and remove. Move goes back to the grid with the block framed in blue: turning moves it one place along its row (empty slots count as places), a press puts it down. Remove asks once: a second press removes the block, turning keeps it. Until the value encoders are fitted, the navigation encoder's cursor also walks through the knob slots. Value encoders will work the slot above them directly: a short press toggles fine steps, a long press resets the knob.
+A block's page has the block's input, output and mix in the knob row, and on the stage: the block on or off, normalize, the model (for a local tone with several models a press starts picking; the model loads while turning, once the encoder rests), and move and remove. Move goes back to the grid with the block framed in the accent colour: turning moves it one place along its row (empty slots count as places), a press puts it down. Remove asks once: a second press removes the block, turning keeps it. Until the value encoders are fitted, the navigation encoder's cursor also walks through the knob slots. Value encoders will work the slot above them directly: a short press toggles fine steps, a long press resets the knob.
 
 A star next to the preset name marks unsaved changes; the save button writes the current sound back to the loaded preset, and a long press on the preset name discards the changes (the preset loads again as saved). The tuner takes the grid's place while its item is entered. The context line describes whatever the cursor is on (on a block with several models, which one plays, e.g. `3/10  Plexi: Gain 3`; on the settings button the CPU load, the CPU temperature and the dropouts) and shows short messages such as "Saved" or "Presets updated" for a moment.
 
@@ -117,7 +123,7 @@ echo 'pi ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff' | sudo tee /etc/sudoe
 sudo chmod 440 /etc/sudoers.d/t3k-host-poweroff
 ```
 
-The optional model encoder (`--model-encoder`, e.g. on GPIO 18/19/20 while I2S is unused) steps through the models of the block under the cursor, or of the open block page's block: quick comparisons of a capture pack's gain stages, for example. The model loads once the encoder rests. Only tones that carry several models can switch: a folder loaded as a local tone in the plugin and saved into a preset. A catalog tone stores only its active model. Note: a preset made on another computer embeds only the models that were actually loaded there; the others refer to that computer's model stash and fail to load on the device.
+The optional second encoder (`--model-encoder`, e.g. on GPIO 18/19/20 while I2S is unused) is the preset's volume by default, like an amp's master knob: it acts at once, even out of the idle view, and the context line shows the value for a moment. With `--model-encoder-role models` it steps through the models of the block under the cursor, or of the open block page's block: quick comparisons of a capture pack's gain stages, for example. The model loads once the encoder rests. Only tones that carry several models can switch: a folder loaded as a local tone in the plugin and saved into a preset. A catalog tone stores only its active model. Note: a preset made on another computer embeds only the models that were actually loaded there; the others refer to that computer's model stash and fail to load on the device.
 
 `--preview <png> --preview-page gate --preview-cursor 1` draws a page into a PNG without audio, to check the layout.
 

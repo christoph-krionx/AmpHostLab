@@ -32,6 +32,10 @@ struct UiState {
   std::atomic<bool> powerArmed{false};
   // The system is shutting down: the screen says when to unplug.
   std::atomic<bool> shuttingDown{false};
+  // Idle view: after this long without input the screen shows only the
+  // preset; 0 = never.
+  std::atomic<juce::uint32> idleViewMs{10000};
+  std::atomic<juce::uint32> lastInputMs{juce::Time::getMillisecondCounter()};
   // Model picked while editing the block page's model entry, applied when
   // editing ends; -1 = none.
   std::atomic<int> pendingModel{-1};
@@ -47,6 +51,14 @@ struct UiState {
   std::atomic<float> tunerHz{0.0f};  // 0 = no reliable pitch
 
   Page currentPage() const { return static_cast<Page>(page.load()); }
+
+  /** True while the screen shows only the preset: nobody has touched the
+      controls for a while, and nothing is waiting on them. */
+  bool idle() const {
+    const auto after = idleViewMs.load();
+    return after > 0 && juce::Time::getMillisecondCounter() - lastInputMs.load() > after && !tunerOn.load() &&
+           !editing.load() && !moving.load() && !removeArmed.load() && !powerArmed.load();
+  }
 
   ChainView getChain() const {
     const juce::ScopedLock lock(chainLock);

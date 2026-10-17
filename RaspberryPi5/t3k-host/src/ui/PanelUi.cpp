@@ -104,6 +104,7 @@ void PanelUi::presetFolderChanged(const juce::StringArray& changedIds) {
 }
 
 void PanelUi::toggleTuner() {
+  state.lastInputMs = juce::Time::getMillisecondCounter();
   const bool on = !state.tunerOn.load();
   state.removeArmed = false;
   state.powerArmed = false;
@@ -150,6 +151,13 @@ std::vector<Target> PanelUi::targets() const {
 }
 
 void PanelUi::handle(const InputEvent& event) {
+  // Out of the idle view, the first touch only brings the screen back;
+  // the volume knob acts at once, like on an amp.
+  const bool wasIdle = state.idle();
+  state.lastInputMs = juce::Time::getMillisecondCounter();
+  const bool volumeKnob = event.source == InputEvent::Source::Model && !secondEncoderModels;
+  if (wasIdle && !volumeKnob)
+    return;
   switch (event.source) {
     case InputEvent::Source::Nav: handleNav(event); break;
     case InputEvent::Source::Value: {
@@ -164,8 +172,12 @@ void PanelUi::handle(const InputEvent& event) {
       break;
     }
     case InputEvent::Source::Model:
-      if (event.kind == InputEvent::Kind::Turn)
+      if (event.kind != InputEvent::Kind::Turn)
+        break;
+      if (secondEncoderModels)
         turnModelEncoder(event.delta);
+      else
+        turnVolume(event.delta, event.step);
       break;
     case InputEvent::Source::Footswitch: break;  // not assigned yet
   }
@@ -342,6 +354,15 @@ void PanelUi::powerOff() {
       }
     });
   }).detach();
+}
+
+// The preset's volume, the overview's Volume knob, in its 0..10 steps.
+void PanelUi::turnVolume(int delta, int step) {
+  auto* p = param("outputLevel");
+  if (p == nullptr)
+    return;
+  p->setValueNotifyingHost(juce::jlimit(0.0f, 1.0f, p->getValue() + static_cast<float>(delta * step) * kKnobStep));
+  state.notify("Volume " + juce::String(realValue(*p) * 10.0f, 1), 1500);
 }
 
 // The block under the cursor, or the block page's block, steps through
