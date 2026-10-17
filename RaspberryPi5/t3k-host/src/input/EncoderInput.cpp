@@ -20,14 +20,15 @@ EncoderInput::~EncoderInput() {
   stopThread(1000);
 }
 
-juce::String EncoderInput::start(const EncoderPins& nav, const EncoderPins* model) {
+juce::String EncoderInput::start(const EncoderPins& nav, const EncoderPins* second, InputEvent::Source secondSource,
+                                 int secondIndex) {
   std::vector<EncoderPins> pins{nav};
   sources = {InputEvent::Source::Nav};
   indices = {0};
-  if (model != nullptr) {
-    pins.push_back(*model);
-    sources.push_back(InputEvent::Source::Model);
-    indices.push_back(0);
+  if (second != nullptr) {
+    pins.push_back(*second);
+    sources.push_back(secondSource);
+    indices.push_back(secondIndex);
   }
   if (!reader.open(pins))
     return reader.error();

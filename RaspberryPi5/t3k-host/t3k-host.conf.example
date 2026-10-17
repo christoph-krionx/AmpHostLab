@@ -17,11 +17,21 @@ encoder = 5,6,26
 ui-font = Barlow Condensed
 ui-accent = amber
 
+# Logo light: a GPIO switched on while the guitar is played (see README)
+# logo-light = 12
+
 # Seconds without input until the screen shows only the preset, 0 = never
 idle-view = 10
-# Optional second encoder: the preset's volume (or "models")
+# Optional second encoder: value encoder 1 (knob1 .. knob5), or "volume" / "models"
 # model-encoder = 18,19,20
-# model-encoder-role = volume
+# model-encoder-role = knob1
+# The value encoders' controls in the zen mode (the idle view). A long press
+# on an encoder sets its line to what the cursor is on. Defaults:
+# zen-knob-1 = param:gateThreshold
+# zen-knob-2 = param:toneBass
+# zen-knob-3 = param:toneMid
+# zen-knob-4 = param:toneTreble
+# zen-knob-5 = param:outputLevel
 
 # Sound at start: a preset, or a local tone when no preset is set.
 # The host updates the preset line whenever another preset is loaded.

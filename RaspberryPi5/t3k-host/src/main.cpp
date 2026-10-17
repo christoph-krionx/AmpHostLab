@@ -22,6 +22,7 @@
 #include "input/EncoderInput.h"
 #include "input/MidiControl.h"
 #include "ui/PanelUi.h"
+#include "ui/TubeGlow.h"
 
 namespace {
 
@@ -47,9 +48,11 @@ struct Options {
   int idleView{10};      // seconds without input until the idle view, 0 = never
   juce::String uiFont{"Barlow Condensed"};  // typeface of the screen, empty = system default
   juce::String uiAccent{"amber"};  // amber | blue | #rrggbb
+  int logoLight{-1};  // GPIO of the logo light, on while the guitar is played; -1 = none
   juce::String encoder;   // "a,b,sw" BCM GPIO numbers, empty = no encoder
   juce::String modelEncoder;  // the same for the second encoder
-  juce::String modelEncoderRole{"volume"};  // volume | models
+  juce::String modelEncoderRole{"knob1"};  // knob1..knob5 | volume | models
+  juce::String zenKnobs[t3k::kKnobSlots];  // zen-mode control per value encoder, empty = default
   juce::String midiInput;     // MIDI input whose name contains this, empty = none
   int midiChannel{0};         // 0 = all channels
   int midiTunerCc{-1};        // CC that switches the tuner, -1 = none
@@ -85,10 +88,12 @@ void printUsage() {
                "  --preview <png>       draw the screen into a PNG (320x240) and exit, no audio\n"
                "  --preview-cursor <n>  cursor position in the preview (default: no cursor)\n"
                "  --preview-edit        show the cursor in edit mode\n"
-               "  --preview-page <name> page in the preview: overview | gate | pitch | spread | block | settings | idle | splash\n"
+               "  --preview-page <name> page in the preview: overview | gate | pitch | spread | block | settings | idle | zen | splash\n"
                "  --encoder <a,b,sw>    front-panel encoder on these GPIOs (e.g. 5,6,26)\n"
                "  --model-encoder <a,b,sw> second encoder (e.g. 18,19,20)\n"
-               "  --model-encoder-role <r> what it does: volume (default) | models\n"
+               "  --model-encoder-role <r> what it does: knob1 (default) .. knob5 | volume | models\n"
+               "  --zen-knob-<n> <control> value encoder n's control in the zen mode: param:<id> | block<N>:on |\n"
+               "                        block<N>:inputGain|outputGain|mix (set by a long press on the panel)\n"
                "  --midi-input <text>   MIDI input whose name contains <text> (program changes, CCs)\n"
                "  --midi-channel <n>    MIDI channel 1-16, 0 = all (default)\n"
                "  --midi-tuner-cc <n>   CC number that switches the tuner on and off\n"
@@ -99,7 +104,8 @@ void printUsage() {
                "  --lcd-backlight <gpio> backlight switched by this GPIO (dark while the host is not running)\n"
                "  --idle-view <s>       show only the preset after this many seconds without input, 0 = never (default 10)\n"
                "  --ui-font <name>      typeface of the screen, e.g. \"Space Grotesk\" (default: Barlow Condensed)\n"
-               "  --ui-accent <colour>  the screen's navigation colour: amber | blue | #rrggbb (default amber)\n";
+               "  --ui-accent <colour>  the screen's navigation colour: amber | blue | #rrggbb (default amber)\n"
+               "  --logo-light <gpio>   GPIO switched on while the guitar is played (logo light, e.g. 12)\n";
 }
 
 bool parseArgs(const juce::StringArray& args, Options& o) {
@@ -127,6 +133,8 @@ bool parseArgs(const juce::StringArray& args, Options& o) {
     else if (a == "--encoder") o.encoder = value();
     else if (a == "--model-encoder") o.modelEncoder = value();
     else if (a == "--model-encoder-role") o.modelEncoderRole = value();
+    else if (a.startsWith("--zen-knob-") && juce::isPositiveAndBelow(a.substring(11).getIntValue() - 1, t3k::kKnobSlots))
+      o.zenKnobs[a.substring(11).getIntValue() - 1] = value();
     else if (a == "--midi-input") o.midiInput = value();
     else if (a == "--midi-channel") o.midiChannel = value().getIntValue();
     else if (a == "--midi-tuner-cc") o.midiTunerCc = value().getIntValue();
@@ -138,6 +146,7 @@ bool parseArgs(const juce::StringArray& args, Options& o) {
     else if (a == "--idle-view") o.idleView = value().getIntValue();
     else if (a == "--ui-font") o.uiFont = value();
     else if (a == "--ui-accent") o.uiAccent = value();
+    else if (a == "--logo-light") o.logoLight = value().getIntValue();
     else return false;
   }
   return true;
@@ -318,9 +327,17 @@ int main(int argc, char** argv) {
       previewState.active = opt.previewCursor >= 0;
       previewState.selected = juce::jmax(0, opt.previewCursor);
       previewState.editing = opt.previewEdit;
-      // "idle": as if nobody had touched the controls for a minute.
+      // "idle": as if nobody had touched the controls for a minute; "zen":
+      // the idle view while the first value encoder turns.
+      const bool zen = opt.previewPage.equalsIgnoreCase("zen");
       previewState.lastInputMs = juce::Time::getMillisecondCounter() -
-                                 (opt.previewPage.equalsIgnoreCase("idle") ? 60000u : 0u);
+                                 (zen || opt.previewPage.equalsIgnoreCase("idle") ? 60000u : 0u);
+      if (zen) {
+        const auto control = opt.zenKnobs[0].isNotEmpty() ? t3k::ZenControl::parse(opt.zenKnobs[0])
+                                                           : t3k::defaultZenControl(0);
+        previewState.showZen(t3k::readZenControl(control, processor.getParameters(), previewChain), 60000);
+      }
+      previewState.logoGlow = 0.95f;  // the logo as while playing
       const auto frame = previewUi.renderPreview(320, 240, opt.previewPage.equalsIgnoreCase("splash"));
       const juce::File out = juce::File::getCurrentWorkingDirectory().getChildFile(opt.preview);
       out.deleteFile();
@@ -466,14 +483,22 @@ int main(int argc, char** argv) {
   }
 
   t3k::ChainWatcher chainWatcher(processor, uiState);
+  // The logo's tube glow, on the screen and on the logo light.
+  t3k::TubeGlow tubeGlow(processor, uiState, opt.logoLight);
 
   std::unique_ptr<t3k::PanelUi> panel;
   std::unique_ptr<t3k::EncoderInput> encoder;
   if (opt.encoder.isNotEmpty()) {
     uiState.idleViewMs = static_cast<juce::uint32>(juce::jmax(0, opt.idleView)) * 1000;
+    // Like an amp: after the splash the screen shows the preset right away;
+    // the first touch of a control brings the full screen.
+    uiState.lastInputMs = juce::Time::getMillisecondCounter() - uiState.idleViewMs.load() - 1000;
     panel = std::make_unique<t3k::PanelUi>(processor, uiState, display.get());
     panel->setCurrentPreset(opt.preset);
     panel->setSecondEncoderStepsModels(opt.modelEncoderRole.equalsIgnoreCase("models"));
+    for (int i = 0; i < t3k::kKnobSlots; ++i)
+      if (opt.zenKnobs[i].isNotEmpty())
+        panel->setZenControl(i, opt.zenKnobs[i]);
     // The preset turned to last and the settings changed on the panel come
     // back on the next start.
     if (configFile.existsAsFile()) {
@@ -500,8 +525,15 @@ int main(int argc, char** argv) {
       encoderError = "expected --encoder a,b,sw";
     else if (haveModel && !pinsOf(opt.modelEncoder, model))
       encoderError = "expected --model-encoder a,b,sw";
-    else
-      encoderError = encoder->start(nav, haveModel ? &model : nullptr);
+    else {
+      // The second encoder as a value encoder ("knob2" = the second slot),
+      // or the volume or model encoder.
+      const auto role = opt.modelEncoderRole.toLowerCase();
+      const bool knob = role.startsWith("knob");
+      const int slot = juce::jlimit(0, t3k::kKnobSlots - 1, role.substring(4).getIntValue() - 1);
+      encoderError = encoder->start(nav, haveModel ? &model : nullptr,
+                                    knob ? t3k::InputEvent::Source::Value : t3k::InputEvent::Source::Model, slot);
+    }
     if (encoderError.isNotEmpty()) {
       std::cerr << "Encoder not available: " << encoderError << std::endl;
       encoder.reset();

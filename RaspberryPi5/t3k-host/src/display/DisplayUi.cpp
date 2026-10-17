@@ -171,7 +171,8 @@ void DisplayUi::drawSplash(juce::Graphics& g) const {
   const auto area = juce::Rectangle<int>(frameW, frameH);
   // The logo with the maker's name beside it, set like a nameplate:
   // GREYSCALE large, AUDIO small and widely spaced underneath. The group
-  // is centred as a whole.
+  // is centred as a whole; the product's name stands below it.
+  // The status line and the version sit at the bottom.
   const auto nameFont = font(40.0f, true);
   const auto subFont = font(14.0f, true).withExtraKerningFactor(0.7f);
   juce::GlyphArrangement nameWidth;
@@ -181,7 +182,7 @@ void DisplayUi::drawSplash(juce::Graphics& g) const {
   const float logoW = logoH * 100.0f / 120.0f;
   const float gap = 10.0f;
   const float left = (static_cast<float>(frameW) - (logoW + gap + textW)) / 2.0f;
-  const float centreY = 96.0f;
+  const float centreY = 82.0f;
   if (logo != nullptr)
     logo->drawWithin(g, juce::Rectangle<float>(left, centreY - logoH / 2.0f, logoW, logoH),
                      juce::RectanglePlacement::centred, 1.0f);
@@ -193,6 +194,9 @@ void DisplayUi::drawSplash(juce::Graphics& g) const {
   g.setColour(kDim);
   g.setFont(subFont);
   g.drawText("AUDIO", juce::Rectangle<float>(textX + 2.0f, centreY + 14.0f, textW, 20.0f), juce::Justification::topLeft);
+  g.setColour(kText);
+  g.setFont(font(22.0f, true).withExtraKerningFactor(0.35f));
+  g.drawText("ZENAMP ONE", area.withTrimmedTop(136).withHeight(26), juce::Justification::centred);
   juce::String line;
   {
     const juce::ScopedLock lock(titleLock);
@@ -200,7 +204,7 @@ void DisplayUi::drawSplash(juce::Graphics& g) const {
   }
   g.setColour(kDim);
   g.setFont(font(16.0f));
-  g.drawText(line, area.withTrimmedTop(156), juce::Justification::centredTop);
+  g.drawText(line, area.withTrimmedTop(180), juce::Justification::centredTop);
   g.setFont(font(12.0f));
   g.drawText(juce::String::fromUTF8("v" T3K_HOST_VERSION "  \xc2\xb7  plugin " T3K_PLUGIN_REF), area.withTrimmedBottom(6),
              juce::Justification::centredBottom);
@@ -211,6 +215,11 @@ void DisplayUi::drawSplash(juce::Graphics& g) const {
 // the edges and in one typeface. A long name shrinks, then takes a second
 // line upwards; the number gives way above it.
 void DisplayUi::drawIdle(juce::Graphics& g) {
+  // A zen control being turned shows alone.
+  if (ZenReading zen; state.getZen(zen)) {
+    drawZen(g, zen);
+    return;
+  }
   juce::String name;
   {
     const juce::ScopedLock lock(titleLock);
@@ -219,6 +228,15 @@ void DisplayUi::drawIdle(juce::Graphics& g) {
   const int index = state.presetIndex.load();
   const float margin = 18.0f;
   const auto area = juce::Rectangle<float>(static_cast<float>(frameW), static_cast<float>(frameH)).reduced(margin);
+
+  // The logo in the top left corner, glowing like a warm tube (TubeGlow
+  // sets the brightness).
+  if (logo != nullptr) {
+    const float level = state.logoGlow.load();
+    const float logoH = 58.0f;
+    const auto box = juce::Rectangle<float>(area.getX() - 4.0f, area.getY(), logoH * 100.0f / 120.0f, logoH);
+    logo->drawWithin(g, box, juce::RectanglePlacement::xLeft | juce::RectanglePlacement::yTop, level);
+  }
 
   // The name: the largest size that fits one line, down to a floor; below
   // that two lines at the floor size.
@@ -255,6 +273,38 @@ void DisplayUi::drawIdle(juce::Graphics& g) {
   digits.draw(g, juce::AffineTransform::translation(-bounds.getRight(), -bounds.getY())
                      .scaled(scale)
                      .translated(numberBox.getRight(), numberBox.getY()));
+}
+
+// A zen control while it turns: its name on top, the value large, and a
+// knob's position as a bar along the bottom (a switch reads On or Off).
+void DisplayUi::drawZen(juce::Graphics& g, const ZenReading& zen) const {
+  const float margin = 18.0f;
+  const auto area = juce::Rectangle<float>(static_cast<float>(frameW), static_cast<float>(frameH)).reduced(margin);
+  g.setColour(kDim);
+  g.setFont(font(24.0f, true));
+  g.drawFittedText(zen.name, area.withHeight(30.0f).toNearestInt(), juce::Justification::topLeft, 1, 0.8f);
+
+  const bool bar = zen.position >= 0.0f;
+  const auto barBox = area.withTop(area.getBottom() - 10.0f);
+  const auto valueBox = area.withTrimmedTop(36.0f).withBottom(bar ? barBox.getY() - 12.0f : area.getBottom());
+  float size = 84.0f;
+  const auto widthAt = [&zen](float s) {
+    juce::GlyphArrangement measure;
+    measure.addLineOfText(font(s, true), zen.value, 0.0f, 0.0f);
+    return measure.getBoundingBox(0, -1, true).getWidth();
+  };
+  while (size > 30.0f && widthAt(size) > valueBox.getWidth())
+    size -= 2.0f;
+  g.setColour(zen.on ? kText : kDim);
+  g.setFont(font(size, true));
+  g.drawText(zen.value, valueBox, juce::Justification::centred);
+
+  if (bar) {
+    g.setColour(kTrack);
+    g.fillRoundedRectangle(barBox, 3.0f);
+    g.setColour(gAccent);
+    g.fillRoundedRectangle(barBox.withWidth(juce::jmax(barBox.getHeight(), barBox.getWidth() * zen.position)), 3.0f);
+  }
 }
 
 void DisplayUi::drawMain(juce::Graphics& g) {

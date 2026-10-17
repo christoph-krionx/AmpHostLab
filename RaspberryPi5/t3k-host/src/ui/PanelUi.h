@@ -7,14 +7,18 @@
 // the page of an effect switch or a block, goes back from a page, or resets
 // the knob being edited to its default.
 // Value encoders: each works the knob slot above it; a short press toggles
-// fine steps, a long press resets the knob.
+// fine steps. A long press puts what the cursor is on onto the encoder for
+// the zen mode (the idle view): there each encoder works its own control,
+// the same for every preset, and the screen shows it alone while it turns
+// (see ZenControls). Presses do nothing in the zen mode.
 //
 // The block page can also move its block: back on the grid the block then
 // follows the turns through its row until a press puts it down.
 //
-// Second encoder: the preset's volume, like an amp's master knob (it acts
-// at once, even out of the idle view); or, as role "models", steps through
-// the models of the block under the cursor (or of the block page's block).
+// Second encoder: a value encoder (role "knob1".."knob5"); the preset's
+// volume, like an amp's master knob (it acts at once, even out of the idle
+// view); or, as role "models", steps through the models of the block under
+// the cursor (or of the block page's block).
 // A long press on the preset name discards unsaved changes; the settings
 // page can power the device off.
 //
@@ -32,6 +36,7 @@
 #include "UiState.h"
 #include "input/InputEvent.h"
 #include "ui/PresetFolderWatcher.h"
+#include "ui/ZenControls.h"
 
 class TONE3000Processor;
 
@@ -55,6 +60,10 @@ public:
 
   /** What the second encoder does: the volume (default) or the models. */
   void setSecondEncoderStepsModels(bool models) { secondEncoderModels = models; }
+
+  /** The zen-mode control of a value encoder, as the settings file keeps
+      it (see ZenControls); unknown text keeps the default. */
+  void setZenControl(int slot, const juce::String& spec);
 
   /** Another preset became active without the panel (MIDI): follow it. */
   void presetChangedElsewhere(const juce::String& presetId);
@@ -87,8 +96,11 @@ private:
   void toggle(const char* paramId);
   void stepChoice(const char* paramId, int delta);
   void adjustKnob(int slot, int delta, int step, bool fine);
+  void adjustParamKnob(const KnobDef& knob, float move);
   void resetKnob(int slot);
-  void setBlockKnob(const KnobDef& knob, float value);
+  void setBlockKnob(const std::string& blockId, const KnobDef& knob, float value);
+  void turnZen(int slot, int delta, int step);
+  void assignZen(int slot);
   bool isChoice(const char* paramId) const;
 
   void toggleBlock(int toneIndex);
@@ -122,6 +134,8 @@ private:
   int modelRequest{0};    // counts model picks; only the latest one loads
   int appliedModel{-1};   // model id last sent while picking
   bool secondEncoderModels{false};
+  ZenControl zen[kKnobSlots]{defaultZenControl(0), defaultZenControl(1), defaultZenControl(2), defaultZenControl(3),
+                             defaultZenControl(4)};
   PresetFolderWatcher presetFolder{[this](const juce::StringArray& ids) { presetFolderChanged(ids); }};
 
   JUCE_DECLARE_WEAK_REFERENCEABLE(PanelUi)

@@ -11,6 +11,7 @@
 
 #include "ui/ChainView.h"
 #include "ui/PanelModel.h"
+#include "ui/ZenControls.h"
 
 namespace t3k {
 
@@ -36,6 +37,8 @@ struct UiState {
   // preset; 0 = never.
   std::atomic<juce::uint32> idleViewMs{10000};
   std::atomic<juce::uint32> lastInputMs{juce::Time::getMillisecondCounter()};
+  // Brightness of the logo, 0..1, like a warm tube (see TubeGlow).
+  std::atomic<float> logoGlow{0.55f};
   // Model picked while editing the block page's model entry, applied when
   // editing ends; -1 = none.
   std::atomic<int> pendingModel{-1};
@@ -89,6 +92,22 @@ struct UiState {
     return static_cast<juce::int32>(noticeUntilMs - juce::Time::getMillisecondCounter()) > 0 ? notice : juce::String();
   }
 
+  /** A control turned in the zen mode: the idle view shows it alone for a
+      moment. */
+  void showZen(const ZenReading& reading, juce::uint32 forMs = 1500) {
+    const juce::ScopedLock lock(chainLock);
+    zen = reading;
+    zenUntilMs = juce::Time::getMillisecondCounter() + forMs;
+  }
+  /** The control to show, false when there is none. */
+  bool getZen(ZenReading& out) const {
+    const juce::ScopedLock lock(chainLock);
+    if (static_cast<juce::int32>(zenUntilMs - juce::Time::getMillisecondCounter()) <= 0)
+      return false;
+    out = zen;
+    return true;
+  }
+
   /** The block the block page (or a move) is about. */
   std::string getPageBlock() const {
     const juce::ScopedLock lock(chainLock);
@@ -100,11 +119,13 @@ struct UiState {
   }
 
 private:
-  juce::CriticalSection chainLock;  // guards chain, pageBlock and the notice
+  juce::CriticalSection chainLock;  // guards chain, pageBlock, the notice and zen
   ChainView chain;
   std::string pageBlock;
   juce::String notice;
   juce::uint32 noticeUntilMs{0};
+  ZenReading zen;
+  juce::uint32 zenUntilMs{0};
 };
 
 }  // namespace t3k

@@ -48,7 +48,8 @@ t3k-host --device Scarlett --block 64 --tone ~/tones/my-amp.nam
 | `--lcd-backlight <gpio>` | Backlight switched by this GPIO (e.g. `13`): on with the first picture, off when the host ends, so the panel stays dark while it is not running |
 | `--encoder <a,b,sw>` | Front-panel encoder on these BCM GPIOs, e.g. `5,6,26` |
 | `--model-encoder <a,b,sw>` | Second encoder, e.g. `18,19,20` |
-| `--model-encoder-role <r>` | What it does: `volume` (default, the preset's volume) or `models` (steps the selected block's models) |
+| `--model-encoder-role <r>` | What it does: `knob1` (default) .. `knob5` (a value encoder, see Zen mode), `volume` (the preset's volume) or `models` (steps the selected block's models) |
+| `--zen-knob-<n> <control>` | Value encoder n's control in the zen mode: `param:<id>`, `block<N>:on` or `block<N>:inputGain` / `outputGain` / `mix`; set by a long press on the panel |
 | `--midi-input <text>` | MIDI input whose name contains `<text>`, e.g. `Scarlett` (see MIDI) |
 | `--midi-channel <n>` | MIDI channel 1-16, `0` = all (default) |
 | `--midi-tuner-cc <n>` | CC number that switches the tuner on and off |
@@ -108,11 +109,17 @@ The navigation encoder with push button operates the device. Turning moves the c
 - A short press switches what the cursor is on (a block, an effect, a switch on a page) or starts editing it (preset, knob, choice); turning then changes the value and another press ends editing. In the preset item turning steps through the presets.
 - A long press (600 ms, it fires while the button is still held) on an effect switch or a block opens its page in place of the grid; on a page it goes back. While a knob is being edited, a long press sets it to its default.
 
-After ten seconds without input (`idle-view`) the screen shows only the preset: its number above its name, nothing else. The first turn or press only brings the normal screen back, so nothing changes by accident in the dark; presets loaded over MIDI show up in the idle view directly. The tuner, an edit in progress or a pending confirmation keep the normal screen.
+The screen starts in the idle view right after the splash, and returns to it after ten seconds without input (`idle-view`): it shows only the preset, its number above its name, nothing else. The first turn or press only brings the normal screen back, so nothing changes by accident in the dark; presets loaded over MIDI show up in the idle view directly. The tuner, an edit in progress or a pending confirmation keep the normal screen.
 
 The gate, pitch and spread pages list their switches on the stage and put their continuous parameters into the knob row; the gate page marks its threshold on the input meter.
 
-A block's page has the block's input, output and mix in the knob row, and on the stage: the block on or off, normalize, the model (for a local tone with several models a press starts picking; the model loads while turning, once the encoder rests), and move and remove. Move goes back to the grid with the block framed in the accent colour: turning moves it one place along its row (empty slots count as places), a press puts it down. Remove asks once: a second press removes the block, turning keeps it. Until the value encoders are fitted, the navigation encoder's cursor also walks through the knob slots. Value encoders will work the slot above them directly: a short press toggles fine steps, a long press resets the knob.
+A block's page has the block's input, output and mix in the knob row, and on the stage: the block on or off, normalize, the model (for a local tone with several models a press starts picking; the model loads while turning, once the encoder rests), and move and remove. Move goes back to the grid with the block framed in the accent colour: turning moves it one place along its row (empty slots count as places), a press puts it down. Remove asks once: a second press removes the block, turning keeps it. Until the value encoders are fitted, the navigation encoder's cursor also walks through the knob slots. Value encoders work the slot above them directly; a short press toggles fine steps, a long press assigns the encoder's zen control (below).
+
+### Zen mode
+
+The zen mode is the idle view, the screen that shows only the preset. There each value encoder works one control of its own, the same for every preset, and the screen shows that control alone while it turns: its name, the value large and, for a knob, a bar. The idle view stays; presses do nothing there. By default the five encoders are the noise gate's threshold, the preset's bass, mid and treble, and its volume.
+
+To put something else on an encoder, move the cursor onto it on the normal screen and hold that encoder: a knob of any page, an effect switch (gate, pitch, spread), an entry of a page (pitch step, for example) or a block (its on/off). A switch follows the turning direction: clockwise on, the other way off. Blocks are taken by their place in the chain ("block 2"), since every preset has blocks of its own; a preset with fewer blocks shows "No block". The assignment is kept in the settings file (`zen-knob-1` .. `zen-knob-5`). Changes made in the zen mode count like any other change to the preset: save keeps them, discard drops them.
 
 A star next to the preset name marks unsaved changes; the save button writes the current sound back to the loaded preset, and a long press on the preset name discards the changes (the preset loads again as saved). The tuner takes the grid's place while its item is entered. The context line describes whatever the cursor is on (on a block with several models, which one plays, e.g. `3/10  Plexi: Gain 3`; on the settings button the CPU load, the CPU temperature and the dropouts) and shows short messages such as "Saved" or "Presets updated" for a moment.
 
@@ -123,7 +130,7 @@ echo 'pi ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff' | sudo tee /etc/sudoe
 sudo chmod 440 /etc/sudoers.d/t3k-host-poweroff
 ```
 
-The optional second encoder (`--model-encoder`, e.g. on GPIO 18/19/20 while I2S is unused) is the preset's volume by default, like an amp's master knob: it acts at once, even out of the idle view, and the context line shows the value for a moment. With `--model-encoder-role models` it steps through the models of the block under the cursor, or of the open block page's block: quick comparisons of a capture pack's gain stages, for example. The model loads once the encoder rests. Only tones that carry several models can switch: a folder loaded as a local tone in the plugin and saved into a preset. A catalog tone stores only its active model. Note: a preset made on another computer embeds only the models that were actually loaded there; the others refer to that computer's model stash and fail to load on the device.
+The optional second encoder (`--model-encoder`, e.g. on GPIO 18/19/20 while I2S is unused) is value encoder 1 by default (`model-encoder-role = knob1`, see Zen mode). With `--model-encoder-role volume` it is the preset's volume, like an amp's master knob: it acts at once, even out of the idle view, and the context line shows the value for a moment. With `--model-encoder-role models` it steps through the models of the block under the cursor, or of the open block page's block: quick comparisons of a capture pack's gain stages, for example. The model loads once the encoder rests. Only tones that carry several models can switch: a folder loaded as a local tone in the plugin and saved into a preset. A catalog tone stores only its active model. Note: a preset made on another computer embeds only the models that were actually loaded there; the others refer to that computer's model stash and fail to load on the device.
 
 `--preview <png> --preview-page gate --preview-cursor 1` draws a page into a PNG without audio, to check the layout.
 
@@ -174,6 +181,12 @@ midi-cc = 65:presetPrevious
 midi-cc = 66:presetNext
 midi-cc = 67:block1Power
 ```
+
+## Logo light
+
+The logo glows like a warm tube: a steady low glow while nothing is played; while the input passes the gate's threshold (-55 dB with the gate off) it brightens and breathes, and it glows up briefly when another preset comes in. The logo in the idle view shows it.
+
+With `logo-light = 12` a GPIO lights a physical logo while the guitar is played: on as soon as the input passes the threshold, held 0.4 s across the gaps between notes, then off; the light's own RC filter makes the fade. It shares its LED with the heartbeat, each on its own GPIO: GPIO 17 (the system's heartbeat, always running, the sign of life) and GPIO 12 each feed the LED's RC filter through a Schottky diode (diode-OR), so neither GPIO drives the other. No overlay is needed: the host drives the GPIO directly.
 
 ## Realtime permissions
 

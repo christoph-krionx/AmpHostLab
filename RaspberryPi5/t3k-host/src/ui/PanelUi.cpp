@@ -152,8 +152,14 @@ std::vector<Target> PanelUi::targets() const {
 
 void PanelUi::handle(const InputEvent& event) {
   // Out of the idle view, the first touch only brings the screen back;
-  // the volume knob acts at once, like on an amp.
+  // the volume knob acts at once, like on an amp. The value encoders work
+  // their zen controls there and leave the idle view as it is.
   const bool wasIdle = state.idle();
+  if (wasIdle && event.source == InputEvent::Source::Value) {
+    if (event.kind == InputEvent::Kind::Turn)
+      turnZen(event.index, event.delta, event.step);
+    return;
+  }
   state.lastInputMs = juce::Time::getMillisecondCounter();
   const bool volumeKnob = event.source == InputEvent::Source::Model && !secondEncoderModels;
   if (wasIdle && !volumeKnob)
@@ -168,7 +174,7 @@ void PanelUi::handle(const InputEvent& event) {
       else if (event.kind == InputEvent::Kind::Press)
         state.fineSlots = state.fineSlots.load() ^ bit;
       else
-        resetKnob(slot);
+        assignZen(slot);
       break;
     }
     case InputEvent::Source::Model:
@@ -510,9 +516,14 @@ void PanelUi::adjustKnob(int slot, int delta, int step, bool fine) {
   if (knob.blockParam) {
     const auto chain = state.getChain();
     if (const auto* cell = chain.find(state.getPageBlock()))
-      setBlockKnob(knob, blockValue(knob, *cell) + move * kKnobStep);
+      setBlockKnob(cell->id, knob, blockValue(knob, *cell) + move * kKnobStep);
     return;
   }
+  adjustParamKnob(knob, move);
+}
+
+// `move`: in detents, times the turning's acceleration.
+void PanelUi::adjustParamKnob(const KnobDef& knob, float move) {
   auto* p = param(knob.paramId);
   if (p == nullptr)
     return;
@@ -531,13 +542,12 @@ void PanelUi::resetKnob(int slot) {
     return;
   const auto& knob = knobs[static_cast<size_t>(slot)];
   if (knob.blockParam)
-    setBlockKnob(knob, knob.blockDefault);
+    setBlockKnob(state.getPageBlock(), knob, knob.blockDefault);
   else if (auto* p = param(knob.paramId))
     p->setValueNotifyingHost(p->getDefaultValue());
 }
 
-void PanelUi::setBlockKnob(const KnobDef& knob, float value) {
-  const auto id = state.getPageBlock();
+void PanelUi::setBlockKnob(const std::string& id, const KnobDef& knob, float value) {
   const float n = juce::jlimit(0.0f, 1.0f, value);
   if (!processor.setBlockParam(id, knob.paramId, n))
     return;
@@ -547,6 +557,106 @@ void PanelUi::setBlockKnob(const KnobDef& knob, float value) {
   state.updateCell(id, [&name, n](ChainCell& cell) {
     (name == "inputGain" ? cell.inputGain : name == "outputGain" ? cell.outputGain : cell.mix) = n;
   });
+}
+
+void PanelUi::setZenControl(int slot, const juce::String& spec) {
+  const auto control = ZenControl::parse(spec);
+  if (!juce::isPositiveAndBelow(slot, kKnobSlots) || control.kind == ZenControl::Kind::None) {
+    std::cerr << "Zen knob " << slot + 1 << ": not a control: " << spec << std::endl;
+    return;
+  }
+  zen[slot] = control;
+}
+
+// The encoder's own control, whatever page the panel was left on. A
+// switch follows the direction: clockwise on, the other way off.
+void PanelUi::turnZen(int slot, int delta, int step) {
+  if (!juce::isPositiveAndBelow(slot, kKnobSlots))
+    return;
+  const auto& control = zen[slot];
+  const float move = static_cast<float>(delta * step);
+  switch (control.kind) {
+    case ZenControl::Kind::None: break;
+    case ZenControl::Kind::Param: {
+      auto* p = param(control.id.toRawUTF8());
+      ParamPlace place;
+      if (p == nullptr || !findParamPlace(control.id, place))
+        break;
+      if (place.knob != nullptr)
+        adjustParamKnob(*place.knob, move);
+      else if (isChoice(control.id.toRawUTF8()))
+        stepChoice(control.id.toRawUTF8(), delta);
+      else
+        p->setValueNotifyingHost(delta > 0 ? 1.0f : 0.0f);
+      break;
+    }
+    case ZenControl::Kind::BlockOn:
+    case ZenControl::Kind::BlockKnob: {
+      const auto chain = state.getChain();
+      const auto tones = chain.tones();
+      if (!juce::isPositiveAndBelow(control.block, static_cast<int>(tones.size())))
+        break;
+      const auto& cell = *tones[static_cast<size_t>(control.block)];
+      if (control.kind == ZenControl::Kind::BlockOn) {
+        const bool on = delta > 0;
+        if (processor.setBlockParam(cell.id, "enabled", on ? 1.0 : 0.0))
+          state.updateCell(cell.id, [on](ChainCell& c) { c.enabled = on; });
+      } else if (const auto* knob = blockKnobDef(control.id)) {
+        setBlockKnob(cell.id, *knob, blockValue(*knob, cell) + move * kKnobStep);
+      }
+      break;
+    }
+  }
+  state.showZen(readZenControl(control, processor.getParameters(), state.getChain()));
+}
+
+// What the cursor is on becomes the encoder's zen control; it is kept in
+// the settings file for the next start.
+void PanelUi::assignZen(int slot) {
+  if (!juce::isPositiveAndBelow(slot, kKnobSlots))
+    return;
+  const auto list = targets();
+  const int selected = state.selected.load();
+  if (!juce::isPositiveAndBelow(selected, static_cast<int>(list.size())))
+    return;
+  const auto target = list[static_cast<size_t>(selected)];
+  const auto& def = pageDef(state.currentPage());
+  const auto chain = state.getChain();
+  const int pageBlock = chain.toneIndex(state.getPageBlock());
+  ZenControl control;
+  switch (target.kind) {
+    case TargetKind::Knob: {
+      const auto& knob = def.knobs[static_cast<size_t>(target.index)];
+      if (!knob.blockParam)
+        control = {ZenControl::Kind::Param, knob.paramId, 0};
+      else if (pageBlock >= 0)
+        control = {ZenControl::Kind::BlockKnob, knob.paramId, pageBlock};
+      break;
+    }
+    case TargetKind::Switch:
+      control = {ZenControl::Kind::Param, pageDef(kSwitchPages[target.index]).enableParam, 0};
+      break;
+    case TargetKind::Block: control = {ZenControl::Kind::BlockOn, {}, target.index}; break;
+    case TargetKind::Entry: {
+      const auto& entry = def.entries[static_cast<size_t>(target.index)];
+      if (entry.kind == EntryKind::Param)
+        control = {ZenControl::Kind::Param, entry.paramId, 0};
+      else if (entry.kind == EntryKind::BlockOn && pageBlock >= 0)
+        control = {ZenControl::Kind::BlockOn, {}, pageBlock};
+      break;
+    }
+    case TargetKind::Head: break;
+  }
+  if (control.kind == ZenControl::Kind::None) {
+    state.notify("Cannot go on a knob");
+    return;
+  }
+  zen[slot] = control;
+  const auto name = readZenControl(control, processor.getParameters(), chain).name;
+  state.notify("Knob " + juce::String(slot + 1) + ": " + name, 2500);
+  std::cout << "Zen knob " << slot + 1 << ": " << control.toString() << std::endl;
+  if (onSettingChanged)
+    onSettingChanged("zen-knob-" + juce::String(slot + 1), control.toString());
 }
 
 void PanelUi::toggleBlock(int toneIndex) {
