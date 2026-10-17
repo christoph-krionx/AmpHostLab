@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" width="400" height="120">
+  <title>Greyscale Audio</title>
+  <!-- Logo with the wordmark, for dark backgrounds. The wordmark is set in
+       Barlow Condensed (OFL); convert it to outlines for print. -->
+  <rect width="400" height="120" fill="#000000"/>
+  <g transform="translate(10 4) scale(0.93)">
+    <g fill="none" stroke="#C8501E" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M32 92V42C32 22 68 22 68 42V92" stroke-width="4"/>
+      <path d="M26 92H74" stroke-width="4"/>
+      <path d="M40 92V104M50 92V106M60 92V104" stroke-width="4"/>
+      <path d="M42 48L38 62L42 78M42 48L50 62L42 78M42 48L62 62L42 78M58 48L38 62L58 78M58 48L50 62L58 78M58 48L62 62L58 78" stroke-width="2"/>
+    </g>
+    <g fill="#C8501E">
+      <circle cx="42" cy="48" r="3.6"/>
+      <circle cx="58" cy="48" r="3.6"/>
+      <circle cx="38" cy="62" r="3.6"/>
+      <circle cx="50" cy="62" r="3.6"/>
+      <circle cx="62" cy="62" r="3.6"/>
+      <circle cx="42" cy="78" r="3.6"/>
+      <circle cx="58" cy="78" r="3.6"/>
+    </g>
+  </g>
+  <text x="104" y="66" font-family="Barlow Condensed" font-weight="700" font-size="58" letter-spacing="1" fill="#FFFFFF">GREYSCALE</text>
+  <text x="106" y="94" font-family="Barlow Condensed" font-weight="600" font-size="20" letter-spacing="14" fill="#8A8A8A">AUDIO</text>
+</svg>

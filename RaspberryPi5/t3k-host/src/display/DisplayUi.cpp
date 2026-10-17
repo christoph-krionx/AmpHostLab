@@ -3,6 +3,7 @@
 #include "Processor.h"
 #include "core/GearGlyphs.h"
 #include "core/LucideIcons.h"
+#include "display/Logo.h"
 
 namespace t3k {
 
@@ -86,6 +87,7 @@ DisplayUi::DisplayUi(TONE3000Processor& p, juce::AudioDeviceManager& dm, const U
   glyphs["file"] = renderGlyph(ui::gear::kFileIcon, kGlyphSize);
   glyphs["settings"] = renderGlyph(ui::lucideSvg(ui::Icon::Settings), kGlyphSize);
   glyphs["save"] = renderGlyph(ui::lucideSvg(ui::Icon::Save), kGlyphSize);
+  logo = juce::Drawable::createFromSVGString(kLogoSvg);
 }
 
 const juce::Image& DisplayUi::glyphFor(const juce::String& gear) const {
@@ -167,14 +169,30 @@ void DisplayUi::run() {
 
 void DisplayUi::drawSplash(juce::Graphics& g) const {
   const auto area = juce::Rectangle<int>(frameW, frameH);
-  // The maker's name, set like a nameplate: GREYSCALE large, AUDIO small
-  // and widely spaced underneath.
+  // The logo with the maker's name beside it, set like a nameplate:
+  // GREYSCALE large, AUDIO small and widely spaced underneath. The group
+  // is centred as a whole.
+  const auto nameFont = font(40.0f, true);
+  const auto subFont = font(14.0f, true).withExtraKerningFactor(0.7f);
+  juce::GlyphArrangement nameWidth;
+  nameWidth.addLineOfText(nameFont, "GREYSCALE", 0.0f, 0.0f);
+  const float textW = nameWidth.getBoundingBox(0, -1, true).getWidth();
+  const float logoH = 72.0f;
+  const float logoW = logoH * 100.0f / 120.0f;
+  const float gap = 10.0f;
+  const float left = (static_cast<float>(frameW) - (logoW + gap + textW)) / 2.0f;
+  const float centreY = 96.0f;
+  if (logo != nullptr)
+    logo->drawWithin(g, juce::Rectangle<float>(left, centreY - logoH / 2.0f, logoW, logoH),
+                     juce::RectanglePlacement::centred, 1.0f);
+  const float textX = left + logoW + gap;
   g.setColour(kText);
-  g.setFont(font(44.0f, true));
-  g.drawText("GREYSCALE", area.withHeight(150), juce::Justification::centred);
+  g.setFont(nameFont);
+  g.drawText("GREYSCALE", juce::Rectangle<float>(textX, centreY - 34.0f, textW + 4.0f, 46.0f),
+             juce::Justification::bottomLeft);
   g.setColour(kDim);
-  g.setFont(font(16.0f, true).withExtraKerningFactor(0.6f));
-  g.drawText("AUDIO", area.withY(104).withHeight(24), juce::Justification::centred);
+  g.setFont(subFont);
+  g.drawText("AUDIO", juce::Rectangle<float>(textX + 2.0f, centreY + 14.0f, textW, 20.0f), juce::Justification::topLeft);
   juce::String line;
   {
     const juce::ScopedLock lock(titleLock);

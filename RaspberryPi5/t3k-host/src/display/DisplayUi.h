@@ -63,6 +63,7 @@ private:
   int frameH{0};
   // Gear pictograms as alpha masks, rendered once on the message thread.
   std::map<juce::String, juce::Image> glyphs;
+  std::unique_ptr<juce::Drawable> logo;  // made on the message thread, drawn on the display thread
   float peakDb[2]{-100.0f, -100.0f};   // input, output: the level shown in numbers
   juce::uint32 peakUntilMs[2]{0, 0};   // ... held until then
   juce::String address;                // the device's network address, for the settings page
