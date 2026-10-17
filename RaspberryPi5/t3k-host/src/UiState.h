@@ -51,6 +51,10 @@ struct UiState {
   std::atomic<bool> presetSaved{false};
   // Tuner: switched by the panel, measured on the message thread.
   std::atomic<bool> tunerOn{false};
+  // The tuner runs in the zen mode (the idle view shows it full screen).
+  std::atomic<bool> zenTuner{false};
+  // The output is silent while the tuner runs (a setting).
+  std::atomic<bool> tunerMute{true};
   std::atomic<float> tunerHz{0.0f};  // 0 = no reliable pitch
 
   Page currentPage() const { return static_cast<Page>(page.load()); }
@@ -59,7 +63,8 @@ struct UiState {
       controls for a while, and nothing is waiting on them. */
   bool idle() const {
     const auto after = idleViewMs.load();
-    return after > 0 && juce::Time::getMillisecondCounter() - lastInputMs.load() > after && !tunerOn.load() &&
+    return after > 0 && juce::Time::getMillisecondCounter() - lastInputMs.load() > after &&
+           (!tunerOn.load() || zenTuner.load()) &&
            !editing.load() && !moving.load() && !removeArmed.load() && !powerArmed.load();
   }
 

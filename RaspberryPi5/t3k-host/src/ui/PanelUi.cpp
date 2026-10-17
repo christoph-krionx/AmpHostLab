@@ -104,6 +104,11 @@ void PanelUi::presetFolderChanged(const juce::StringArray& changedIds) {
 }
 
 void PanelUi::toggleTuner() {
+  // In the zen mode the tuner stays there.
+  if (state.zenTuner.load() || state.idle()) {
+    setZenTuner(!state.tunerOn.load());
+    return;
+  }
   state.lastInputMs = juce::Time::getMillisecondCounter();
   const bool on = !state.tunerOn.load();
   state.removeArmed = false;
@@ -158,8 +163,13 @@ void PanelUi::handle(const InputEvent& event) {
   if (wasIdle && event.source == InputEvent::Source::Value) {
     if (event.kind == InputEvent::Kind::Turn)
       turnZen(event.index, event.delta, event.step);
+    else if (event.kind == InputEvent::Kind::Press)
+      pressZen(event.index);
     return;
   }
+  // Any other control ends the zen mode's tuner.
+  if (state.zenTuner.load())
+    setZenTuner(false);
   state.lastInputMs = juce::Time::getMillisecondCounter();
   const bool volumeKnob = event.source == InputEvent::Source::Model && !secondEncoderModels;
   if (wasIdle && !volumeKnob)
@@ -263,6 +273,10 @@ void PanelUi::press(const Target& target) {
       const auto& entry = def.entries[static_cast<size_t>(target.index)];
       if (entry.kind == EntryKind::InputMode) {
         state.editing = true;
+      } else if (entry.kind == EntryKind::TunerMute) {
+        state.tunerMute = !state.tunerMute.load();
+        if (onSettingChanged)
+          onSettingChanged("tuner-mute", state.tunerMute.load() ? "on" : "off");
       } else if (entry.kind == EntryKind::PowerOff) {
         if (state.powerArmed.load())
           powerOff();
@@ -310,6 +324,7 @@ void PanelUi::pressBlockEntry(EntryKind kind) {
       break;
     case EntryKind::Param:
     case EntryKind::InputMode:
+    case EntryKind::TunerMute:
     case EntryKind::PowerOff: break;
   }
 }
@@ -577,6 +592,12 @@ void PanelUi::turnZen(int slot, int delta, int step) {
   const float move = static_cast<float>(delta * step);
   switch (control.kind) {
     case ZenControl::Kind::None: break;
+    case ZenControl::Kind::Preset:
+      // The idle view shows the preset itself.
+      state.showZen({}, 0);
+      stepPreset(delta);
+      return;
+    case ZenControl::Kind::Tuner: setZenTuner(delta > 0); return;
     case ZenControl::Kind::Param: {
       auto* p = param(control.id.toRawUTF8());
       ParamPlace place;
@@ -608,6 +629,42 @@ void PanelUi::turnZen(int slot, int delta, int step) {
     }
   }
   state.showZen(readZenControl(control, processor.getParameters(), state.getChain()));
+}
+
+// A press switches a switch, a block or the tuner; knobs, choices and the
+// preset ignore it.
+void PanelUi::pressZen(int slot) {
+  if (!juce::isPositiveAndBelow(slot, kKnobSlots))
+    return;
+  const auto& control = zen[slot];
+  switch (control.kind) {
+    case ZenControl::Kind::Tuner: setZenTuner(!state.tunerOn.load()); return;
+    case ZenControl::Kind::BlockOn: {
+      const auto chain = state.getChain();
+      const auto tones = chain.tones();
+      if (juce::isPositiveAndBelow(control.block, static_cast<int>(tones.size())))
+        turnZen(slot, tones[static_cast<size_t>(control.block)]->enabled ? -1 : 1, 1);
+      return;
+    }
+    case ZenControl::Kind::Param: {
+      ParamPlace place;
+      auto* p = param(control.id.toRawUTF8());
+      if (p != nullptr && findParamPlace(control.id, place) && place.knob == nullptr && !isChoice(control.id.toRawUTF8()))
+        turnZen(slot, p->getValue() > 0.5f ? -1 : 1, 1);
+      return;
+    }
+    case ZenControl::Kind::None:
+    case ZenControl::Kind::BlockKnob:
+    case ZenControl::Kind::Preset: return;
+  }
+}
+
+// The tuner in the zen mode: the idle view stays and shows it.
+void PanelUi::setZenTuner(bool on) {
+  state.zenTuner = on;
+  state.tunerOn = on;
+  if (on)
+    state.showZen({}, 0);
 }
 
 // What the cursor is on becomes the encoder's zen control; it is kept in
@@ -645,7 +702,12 @@ void PanelUi::assignZen(int slot) {
         control = {ZenControl::Kind::BlockOn, {}, pageBlock};
       break;
     }
-    case TargetKind::Head: break;
+    case TargetKind::Head:
+      if (target.index == static_cast<int>(HeadItem::Preset))
+        control = {ZenControl::Kind::Preset, {}, 0};
+      else if (target.index == static_cast<int>(HeadItem::Tuner))
+        control = {ZenControl::Kind::Tuner, {}, 0};
+      break;
   }
   if (control.kind == ZenControl::Kind::None) {
     state.notify("Cannot go on a knob");

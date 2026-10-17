@@ -56,6 +56,7 @@ struct Options {
   juce::String midiInput;     // MIDI input whose name contains this, empty = none
   int midiChannel{0};         // 0 = all channels
   int midiTunerCc{-1};        // CC that switches the tuner, -1 = none
+  bool tunerMute{true};       // silent output while the tuner runs
   juce::StringArray midiCcs;  // "cc:target" mappings for the processor
   juce::StringArray sets;  // "paramId=value", in the parameter's own units
   juce::String config;  // start settings file; empty = the default one
@@ -88,7 +89,7 @@ void printUsage() {
                "  --preview <png>       draw the screen into a PNG (320x240) and exit, no audio\n"
                "  --preview-cursor <n>  cursor position in the preview (default: no cursor)\n"
                "  --preview-edit        show the cursor in edit mode\n"
-               "  --preview-page <name> page in the preview: overview | gate | pitch | spread | block | settings | idle | zen | splash\n"
+               "  --preview-page <name> page in the preview: overview | gate | pitch | spread | block | settings | idle | zen | zen-tuner | splash\n"
                "  --encoder <a,b,sw>    front-panel encoder on these GPIOs (e.g. 5,6,26)\n"
                "  --model-encoder <a,b,sw> second encoder (e.g. 18,19,20)\n"
                "  --model-encoder-role <r> what it does: knob1 (default) .. knob5 | volume | models\n"
@@ -97,6 +98,7 @@ void printUsage() {
                "  --midi-input <text>   MIDI input whose name contains <text> (program changes, CCs)\n"
                "  --midi-channel <n>    MIDI channel 1-16, 0 = all (default)\n"
                "  --midi-tuner-cc <n>   CC number that switches the tuner on and off\n"
+               "  --tuner-mute <on|off> silence the output while the tuner runs (default on)\n"
                "  --midi-cc <cc>:<target> map a CC to a parameter id, blockNPower, presetNext, presetPrevious; repeatable\n"
                "  --lcd <panel>        SPI display: none | ili9341 | st7789 (default none)\n"
                "  --lcd-rotation <0..3> quarter turns (default 1, landscape)\n"
@@ -138,6 +140,7 @@ bool parseArgs(const juce::StringArray& args, Options& o) {
     else if (a == "--midi-input") o.midiInput = value();
     else if (a == "--midi-channel") o.midiChannel = value().getIntValue();
     else if (a == "--midi-tuner-cc") o.midiTunerCc = value().getIntValue();
+    else if (a == "--tuner-mute") o.tunerMute = !value().equalsIgnoreCase("off");
     else if (a == "--midi-cc") o.midiCcs.add(value());
     else if (a == "--lcd") o.lcd = value();
     else if (a == "--lcd-rotation") o.lcdRotation = value().getIntValue();
@@ -332,6 +335,13 @@ int main(int argc, char** argv) {
       const bool zen = opt.previewPage.equalsIgnoreCase("zen");
       previewState.lastInputMs = juce::Time::getMillisecondCounter() -
                                  (zen || opt.previewPage.equalsIgnoreCase("idle") ? 60000u : 0u);
+      // "zen-tuner": the zen mode's tuner, a little sharp of A.
+      if (opt.previewPage.equalsIgnoreCase("zen-tuner")) {
+        previewState.lastInputMs = juce::Time::getMillisecondCounter() - 60000u;
+        previewState.zenTuner = true;
+        previewState.tunerOn = true;
+        previewState.tunerHz = 110.6f;
+      }
       if (zen) {
         const auto control = opt.zenKnobs[0].isNotEmpty() ? t3k::ZenControl::parse(opt.zenKnobs[0])
                                                            : t3k::defaultZenControl(0);
@@ -432,6 +442,9 @@ int main(int argc, char** argv) {
   player.setProcessor(&processor);
   // Below the limit of 95 the service allows, above JUCE's own threads.
   t3k::RealtimeCallback realtime(player, 80);
+  // Silent while the tuner runs, if so set.
+  uiState.tunerMute = opt.tunerMute;
+  realtime.muted = [&uiState] { return uiState.tunerOn.load() && uiState.tunerMute.load(); };
 
   deviceManager.setCurrentAudioDeviceType("ALSA", true);
   const auto error = deviceManager.initialise(2, 2, nullptr, false, {}, &setup);

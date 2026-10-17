@@ -50,6 +50,7 @@ private:
   void drawMain(juce::Graphics& g);
   void drawIdle(juce::Graphics& g);
   void drawZen(juce::Graphics& g, const ZenReading& zen) const;
+  void drawZenTuner(juce::Graphics& g) const;
   void present(const juce::Image& frame);
   const juce::Image& glyphFor(const juce::String& gear) const;
 

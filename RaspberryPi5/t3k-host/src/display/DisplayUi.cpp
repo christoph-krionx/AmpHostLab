@@ -215,7 +215,11 @@ void DisplayUi::drawSplash(juce::Graphics& g) const {
 // the edges and in one typeface. A long name shrinks, then takes a second
 // line upwards; the number gives way above it.
 void DisplayUi::drawIdle(juce::Graphics& g) {
-  // A zen control being turned shows alone.
+  // The tuner, or a zen control being turned, shows alone.
+  if (state.tunerOn.load()) {
+    drawZenTuner(g);
+    return;
+  }
   if (ZenReading zen; state.getZen(zen)) {
     drawZen(g, zen);
     return;
@@ -305,6 +309,55 @@ void DisplayUi::drawZen(juce::Graphics& g, const ZenReading& zen) const {
     g.setColour(gAccent);
     g.fillRoundedRectangle(barBox.withWidth(juce::jmax(barBox.getHeight(), barBox.getWidth() * zen.position)), 3.0f);
   }
+}
+
+// The tuner in the zen mode: the note large in the middle, white once in
+// tune, and the deviation as a marker on a line along the bottom (50 cents
+// at either end).
+void DisplayUi::drawZenTuner(juce::Graphics& g) const {
+  const float margin = 18.0f;
+  const auto area = juce::Rectangle<float>(static_cast<float>(frameW), static_cast<float>(frameH)).reduced(margin);
+  g.setColour(kDim);
+  g.setFont(font(24.0f, true));
+  g.drawText("Tuner", area.withHeight(30.0f), juce::Justification::topLeft);
+  if (state.tunerMute.load())
+    g.drawText("Muted", area.withHeight(30.0f), juce::Justification::topRight);
+
+  const float lineY = area.getBottom() - 30.0f;
+  const float half = area.getWidth() / 2.0f;
+  const float centreX = area.getCentreX();
+  g.setColour(kTrack);
+  g.fillRect(area.getX(), lineY - 2.0f, area.getWidth(), 4.0f);
+  g.setColour(kDim);
+  g.fillRect(centreX - 1.0f, lineY - 12.0f, 2.0f, 24.0f);
+
+  const auto noteBox = area.withTrimmedTop(30.0f).withBottom(lineY - 16.0f);
+  const float hz = state.tunerHz.load();
+  if (hz <= 0.0f) {
+    g.setColour(kDim);
+    g.setFont(font(96.0f, true));
+    g.drawText("--", noteBox, juce::Justification::centred);
+    g.setFont(font(18.0f));
+    g.drawText("Play a single string", area.withTop(lineY + 8.0f), juce::Justification::centredTop);
+    return;
+  }
+  static const char* const kNotes[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+  const float midi = 69.0f + 12.0f * std::log2(hz / 440.0f);
+  const int nearest = juce::roundToInt(midi);
+  const float cents = (midi - static_cast<float>(nearest)) * 100.0f;
+  const bool inTune = std::abs(cents) <= 5.0f;
+  g.setColour(inTune ? kText : kDim);
+  g.setFont(font(110.0f, true));
+  g.drawText(kNotes[((nearest % 12) + 12) % 12], noteBox, juce::Justification::centred);
+
+  const float markerX = centreX + juce::jlimit(-1.0f, 1.0f, cents / 50.0f) * half;
+  const float markerW = inTune ? 10.0f : 6.0f;
+  g.setColour(inTune ? kText : gAccent);
+  g.fillRoundedRectangle(markerX - markerW / 2.0f, lineY - 12.0f, markerW, 24.0f, 2.0f);
+  g.setColour(kDim);
+  g.setFont(font(18.0f));
+  g.drawText(juce::String(hz, 1) + " Hz   " + (cents >= 0.0f ? "+" : "") + juce::String(juce::roundToInt(cents)) + " cent",
+             area.withTop(lineY + 8.0f), juce::Justification::centredTop);
 }
 
 void DisplayUi::drawMain(juce::Graphics& g) {
@@ -638,6 +691,10 @@ void DisplayUi::drawMain(juce::Graphics& g) {
         case EntryKind::InputMode:
           value = choiceText(inputModeName(static_cast<int>(processor.getInputMode())));
           break;
+        case EntryKind::TunerMute:
+          lit = state.tunerMute.load();
+          value = lit ? "On" : "Off";
+          break;
         case EntryKind::PowerOff:
           if (state.powerArmed.load()) {
             value = "Press again";
@@ -677,14 +734,16 @@ void DisplayUi::drawMain(juce::Graphics& g) {
           "Network  " + address,
           cpuLoad + "   " +
               juce::String(xruns) + " dropouts   " + audio,
-          juce::String::fromUTF8("v" T3K_HOST_VERSION "  \xc2\xb7  plugin " T3K_PLUGIN_REF),
       };
       g.setFont(font(12.0f));
       g.setColour(kDim);
       const int infoTop = stage.getY() + entriesTop + static_cast<int>(def.entries.size()) * (rowH + 1) + 4;
-      for (int i = 0; i < 3; ++i)
+      for (int i = 0; i < 2; ++i)
         g.drawText(info[i], stage.getX() + 8, infoTop + i * 15, stage.getWidth() - 16, 15,
                    juce::Justification::centredLeft, true);
+      // The version beside the network; the plugin's commit is on the splash.
+      g.drawText("v" T3K_HOST_VERSION, stage.getX() + 8, infoTop, stage.getWidth() - 16, 15,
+                 juce::Justification::centredRight, true);
     }
   } else if (tunerOn) {
     // While the tuner is on it takes the grid's place.

@@ -49,10 +49,11 @@ t3k-host --device Scarlett --block 64 --tone ~/tones/my-amp.nam
 | `--encoder <a,b,sw>` | Front-panel encoder on these BCM GPIOs, e.g. `5,6,26` |
 | `--model-encoder <a,b,sw>` | Second encoder, e.g. `18,19,20` |
 | `--model-encoder-role <r>` | What it does: `knob1` (default) .. `knob5` (a value encoder, see Zen mode), `volume` (the preset's volume) or `models` (steps the selected block's models) |
-| `--zen-knob-<n> <control>` | Value encoder n's control in the zen mode: `param:<id>`, `block<N>:on` or `block<N>:inputGain` / `outputGain` / `mix`; set by a long press on the panel |
+| `--zen-knob-<n> <control>` | Value encoder n's control in the zen mode: `param:<id>`, `block<N>:on`, `block<N>:inputGain` / `outputGain` / `mix`, `preset` or `tuner`; set by a long press on the panel |
 | `--midi-input <text>` | MIDI input whose name contains `<text>`, e.g. `Scarlett` (see MIDI) |
 | `--midi-channel <n>` | MIDI channel 1-16, `0` = all (default) |
 | `--midi-tuner-cc <n>` | CC number that switches the tuner on and off |
+| `--tuner-mute <on\|off>` | Silence the output while the tuner runs (default `on`; also on the settings page) |
 | `--midi-cc <cc>:<target>` | Map a CC to a processor target, repeatable (see MIDI) |
 | `--preview <png>` | Draw the main screen into a 320x240 PNG and exit, no audio |
 | `--preview-cursor <n>` / `--preview-edit` / `--preview-page <name>` | Cursor position, edit mode and page (`overview`, `gate`, `pitch`, `spread`, `block`, `settings`, `idle`, `splash`) in the preview |
@@ -117,13 +118,13 @@ A block's page has the block's input, output and mix in the knob row, and on the
 
 ### Zen mode
 
-The zen mode is the idle view, the screen that shows only the preset. There each value encoder works one control of its own, the same for every preset, and the screen shows that control alone while it turns: its name, the value large and, for a knob, a bar. The idle view stays; presses do nothing there. By default the five encoders are the noise gate's threshold, the preset's bass, mid and treble, and its volume.
+The zen mode is the idle view, the screen that shows only the preset. There each value encoder works one control of its own, the same for every preset, and the screen shows that control alone while it turns: its name, the value large and, for a knob, a bar. The idle view stays. A press switches a switch (a block, an effect, the tuner); knobs ignore it. By default the five encoders are the noise gate's threshold, the preset's bass, mid and treble, and its volume.
 
-To put something else on an encoder, move the cursor onto it on the normal screen and hold that encoder: a knob of any page, an effect switch (gate, pitch, spread), an entry of a page (pitch step, for example) or a block (its on/off). A switch follows the turning direction: clockwise on, the other way off. Blocks are taken by their place in the chain ("block 2"), since every preset has blocks of its own; a preset with fewer blocks shows "No block". The assignment is kept in the settings file (`zen-knob-1` .. `zen-knob-5`). Changes made in the zen mode count like any other change to the preset: save keeps them, discard drops them.
+To put something else on an encoder, move the cursor onto it on the normal screen and hold that encoder: a knob of any page, an effect switch (gate, pitch, spread), an entry of a page (pitch step, for example), a block (its on/off), the preset name or the tuner button. A switch follows the turning direction too: clockwise on, the other way off. The preset steps through the presets, with the idle view showing number and name; each loads once the encoder rests. The tuner shows full screen in the zen style: the note large, white once within 5 cents, and the deviation as a marker on a line; any other control ends it. Blocks are taken by their place in the chain ("block 2"), since every preset has blocks of its own; a preset with fewer blocks shows "No block". The assignment is kept in the settings file (`zen-knob-1` .. `zen-knob-5`). Changes made in the zen mode count like any other change to the preset: save keeps them, discard drops them.
 
 A star next to the preset name marks unsaved changes; the save button writes the current sound back to the loaded preset, and a long press on the preset name discards the changes (the preset loads again as saved). The tuner takes the grid's place while its item is entered. The context line describes whatever the cursor is on (on a block with several models, which one plays, e.g. `3/10  Plexi: Gain 3`; on the settings button the CPU load, the CPU temperature and the dropouts) and shows short messages such as "Saved" or "Presets updated" for a moment.
 
-A press on the settings button opens the settings page: the input mode (left, right, stereo, dual mono) switches while turning and is written to the settings file when editing ends; power off asks once and then shuts the system down, showing when it is safe to unplug; below them the page shows the network address, CPU load, dropouts, sample rate and buffer, and the version. A long press goes back. Power off needs the host's user to run `systemctl poweroff` without a password:
+A press on the settings button opens the settings page: the input mode (left, right, stereo, dual mono) switches while turning and is written to the settings file when editing ends; tuner mute (a press switches it, kept in the settings file) silences the output while the tuner runs, with a short fade; power off asks once and then shuts the system down, showing when it is safe to unplug; below them the page shows the network address, CPU load, dropouts, sample rate and buffer, and the version. A long press goes back. Power off needs the host's user to run `systemctl poweroff` without a password:
 
 ```bash
 echo 'pi ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff' | sudo tee /etc/sudoers.d/t3k-host-poweroff
@@ -169,7 +170,7 @@ A MIDI controller on the audio interface's MIDI input (`midi-input = Scarlett`) 
 
 - Program change n loads the (n+1)th preset of the list, the number shown in front of the preset name minus one.
 - `midi-cc = <cc>:<target>` maps a CC, one line per mapping. Targets: `presetNext`, `presetPrevious`, `block1Power`, `block2Power`, ... (tone blocks by position), `stereoEnabled`, or any parameter id (`gateEnabled`, `pitchEnabled`, `spreadEnabled`, `toneBass`, `outputLevel`, ... see `--list-params`). Switch targets toggle once per press; continuous parameters follow the CC value.
-- `midi-tuner-cc` switches the tuner, which is no processor parameter; the screen goes to the overview with the tuner showing.
+- `midi-tuner-cc` switches the tuner, which is no processor parameter; in the zen mode it shows there full screen, otherwise the screen goes to the overview with the tuner showing.
 
 The screen follows presets loaded over MIDI (number, name, and the preset remembered for the next start).
 

@@ -41,6 +41,8 @@ preset =
 # MIDI controller on the interface's MIDI input (see README, MIDI)
 # midi-input = Scarlett
 # midi-tuner-cc = 64
+# Silence the output while the tuner runs (also on the settings page)
+# tuner-mute = on
 # midi-cc = 66:presetNext
 
 # CPU/xrun report in the log every n seconds, 0 = off

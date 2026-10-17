@@ -10,7 +10,9 @@
 // fine steps. A long press puts what the cursor is on onto the encoder for
 // the zen mode (the idle view): there each encoder works its own control,
 // the same for every preset, and the screen shows it alone while it turns
-// (see ZenControls). Presses do nothing in the zen mode.
+// (see ZenControls). In the zen mode a press switches a switch (a knob
+// ignores it); the preset steps through the presets, with the idle view
+// showing them; the tuner shows full screen.
 //
 // The block page can also move its block: back on the grid the block then
 // follows the turns through its row until a press puts it down.
@@ -100,6 +102,8 @@ private:
   void resetKnob(int slot);
   void setBlockKnob(const std::string& blockId, const KnobDef& knob, float value);
   void turnZen(int slot, int delta, int step);
+  void pressZen(int slot);
+  void setZenTuner(bool on);
   void assignZen(int slot);
   bool isChoice(const char* paramId) const;
 

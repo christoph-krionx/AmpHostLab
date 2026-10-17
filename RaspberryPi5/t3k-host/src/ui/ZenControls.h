@@ -1,7 +1,7 @@
 // ZenControls: what the value encoders do in the zen mode, the idle view
 // that shows only the preset. Each encoder has one control there, the same
 // for every preset: a processor parameter (a knob, a switch, a choice), a
-// block's knob or a block's on/off. Blocks are named by their place in the
+// block's knob or a block's on/off, the preset or the tuner. Blocks are named by their place in the
 // chain (the second block), since every preset has blocks of its own.
 //
 // A long press on a value encoder puts the control under the cursor on it.
@@ -9,6 +9,8 @@
 //   param:<id>         a processor parameter
 //   block<N>:on        the Nth block's on/off
 //   block<N>:<knob>    the Nth block's inputGain | outputGain | mix
+//   preset             steps through the presets
+//   tuner              the tuner on or off
 
 #pragma once
 
@@ -20,7 +22,7 @@
 namespace t3k {
 
 struct ZenControl {
-  enum class Kind { None, Param, BlockOn, BlockKnob };
+  enum class Kind { None, Param, BlockOn, BlockKnob, Preset, Tuner };
   Kind kind{Kind::None};
   juce::String id;  // the parameter, or the block knob
   int block{0};     // the block's place among the tone blocks, from 0
@@ -30,12 +32,18 @@ struct ZenControl {
       case Kind::Param: return "param:" + id;
       case Kind::BlockOn: return "block" + juce::String(block + 1) + ":on";
       case Kind::BlockKnob: return "block" + juce::String(block + 1) + ":" + id;
+      case Kind::Preset: return "preset";
+      case Kind::Tuner: return "tuner";
       case Kind::None: break;
     }
     return {};
   }
 
   static ZenControl parse(const juce::String& text) {
+    if (text.trim() == "preset")
+      return {Kind::Preset, {}, 0};
+    if (text.trim() == "tuner")
+      return {Kind::Tuner, {}, 0};
     const auto head = text.upToFirstOccurrenceOf(":", false, false).trim();
     const auto tail = text.fromFirstOccurrenceOf(":", false, false).trim();
     if (head == "param" && tail.isNotEmpty())
@@ -106,6 +114,8 @@ inline ZenReading readZenControl(const ZenControl& control, juce::AudioProcessor
   };
   switch (control.kind) {
     case ZenControl::Kind::None: r.name = "Not assigned"; break;
+    case ZenControl::Kind::Preset: r.name = "Preset"; break;
+    case ZenControl::Kind::Tuner: r.name = "Tuner"; break;
     case ZenControl::Kind::Param: {
       ParamPlace place;
       auto* p = params.getParameter(control.id);
